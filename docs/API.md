@@ -16,10 +16,10 @@ The server pushes messages to the client, which can be either JSON objects or ra
 
 #### JSON Messages
 
-| Type          | Description                                                                 | Payload Example                                                                                                 |
-|---------------|-----------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------|
-| `sensor_data` | Pushed periodically (e.g., every second) with the latest power metrics.     | `{"type":"sensor_data", "voltage":12.01, "current":1.52, "power":18.25, "uptime_sec":3600, "timestamp": 1672531200}` |
-| `wifi_status` | Pushed periodically or on change to update the current Wi-Fi connection status. | `{"type":"wifi_status", "connected":true, "ssid":"MyHome_WiFi", "rssi":-65}`                                    |
+| Type          | Description                                                                     | Payload Example                                                                                                      |
+|---------------|---------------------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
+| `sensor_data` | Pushed periodically (e.g., every second) with the latest power metrics.         | `{"type":"sensor_data", "voltage":12.01, "current":1.52, "power":18.25, "uptime_sec":3600, "timestamp": 1672531200}` |
+| `wifi_status` | Pushed periodically or on change to update the current Wi-Fi connection status. | `{"type":"wifi_status", "connected":true, "ssid":"MyHome_WiFi", "rssi":-65}`                                         |
 
 **Field Descriptions:**
 - `sensor_data`:
@@ -88,13 +88,12 @@ Sets the state of power relays or triggers a power action. You can send one or m
     ```
 
 - **Request Fields**:
-  - `load_12v_on` (boolean, optional): Set the state of the 12V relay.
-  - `load_5v_on` (boolean, optional): Set the state of the 5V relay.
-  - `reset_trigger` (boolean, optional): If `true`, momentarily triggers the reset button.
-  - `power_trigger` (boolean, optional): If `true`, momentarily triggers the power button.
+  - `load_12v_on` (boolean, optional): Sets the state of the 12V relay.
+  - `load_5v_on` (boolean, optional): Sets the state of the 5V relay.
+  - `reset_trigger` (boolean, optional): If `true`, momentarily triggers the reset button. The action is triggered only on a `true` value.
+  - `power_trigger` (boolean, optional): If `true`, momentarily triggers the power button. The action is triggered only on a `true` value.
 
 - **Success Response**: `204 No Content`
-- **Error Response**: `400 Bad Request` if the request body is invalid.
 
 ---
 
@@ -127,7 +126,12 @@ Retrieves the complete current network configuration.
   - `ssid` (string): The SSID of the connected network.
   - `mode` (string): The current Wi-Fi mode (`"sta"` or `"apsta"`).
   - `net_type` (string): The network type (`"dhcp"` or `"static"`).
-  - `ip` (object): Contains IP details. Present even if using DHCP (may show last-leased IP).
+  - `ip` (object): Contains IP configuration details. Present even if using DHCP (may show last-leased IP).
+    - `ip` (string): The device's IP address.
+    - `gateway` (string): The network gateway address.
+    - `subnet` (string): The network subnet mask.
+    - `dns1` (string): The primary DNS server address.
+    - `dns2` (string): The secondary DNS server address.
 
 #### `POST /api/wifi`
 
@@ -152,14 +156,17 @@ This is a multi-purpose endpoint. The server determines the action based on the 
     { "net_type": "dhcp" }
     ```
   - **Request Body (for Static IP)**:
+    *Note: The `ip` object structure is consistent with the `GET /api/wifi` response.*
     ```json
     {
-        "net_type": "static",
+      "net_type": "static",
+      "ip": {
         "ip": "192.168.1.100",
         "gateway": "192.168.1.1",
         "subnet": "255.255.255.0",
         "dns1": "8.8.8.8",
         "dns2": "8.8.4.4"
+      }
     }
     ```
   - **Success Response**: `204 No Content`
@@ -207,3 +214,18 @@ Scans for available Wi-Fi networks.
   - `ssid` (string): The network's Service Set Identifier.
   - `rssi` (integer): Signal strength in dBm.
   - `authmode` (string): The authentication mode (e.g., `"OPEN"`, `"WPA_PSK"`, `"WPA2_PSK"`).
+
+---
+
+### General Error Responses
+
+In case of an error, the server will respond with an appropriate HTTP status code.
+
+- **`400 Bad Request`**: The request is malformed, contains invalid parameters, or is otherwise incorrect. The response body may contain a JSON object with more details.
+  ```json
+  {
+    "error": "Invalid request body"
+  }
+  ```
+- **`404 Not Found`**: The requested endpoint does not exist.
+- **`500 Internal Server Error`**: The server encountered an unexpected condition that prevented it from fulfilling the request.
