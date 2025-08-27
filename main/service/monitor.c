@@ -94,7 +94,7 @@ static void init_ina226()
         .scl_io_num = (gpio_num_t) INA226_SCL,
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = false,
+        .flags.enable_internal_pullup = true,
     };
     ESP_ERROR_CHECK(i2c_new_master_bus(&bus_config, &bus_handle));
 
