@@ -38,6 +38,9 @@ struct default_value const default_values[] = {
     {UART_BAUD_RATE, "1500000"},
     {NETIF_DNS1, "8.8.8.8"},
     {NETIF_DNS2, "8.8.4.4"},
+    {WIFI_MODE, "apsta"},
+    {AP_SSID, "odroid-pm"},
+    {AP_PASSWORD, "powermate"},
 };
 
 esp_err_t init_nconfig()
