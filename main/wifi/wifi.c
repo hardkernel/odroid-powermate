@@ -463,7 +463,7 @@ esp_err_t wifi_use_static(const char *ip, const char *gw, const char *netmask, c
     }
 
     esp_err_t err = esp_netif_dhcpc_stop(wifi_sta_netif);
-    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_NOT_STOPPED) {
+    if (err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
         ESP_LOGE(TAG, "Failed to stop DHCP client: %s", esp_err_to_name(err));
         return err;
     }
