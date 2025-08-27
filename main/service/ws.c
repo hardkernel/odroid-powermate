@@ -45,54 +45,42 @@ static void status_task(void *arg)
 
     while (1) {
         if (xQueueReceive(status_queue, &msg, PING_INTERVAL)) {
-            xSemaphoreTake(client_fd_mutex, portMAX_DELAY);
-            int fd = client_fd;
-            xSemaphoreGive(client_fd_mutex);
-
-            if (fd <= 0) {
-                cJSON_Delete(msg.data);
-                continue;
-            }
-
             char *json_string = cJSON_Print(msg.data);
-            httpd_ws_frame_t ws_pkt;
-            memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
-            ws_pkt.payload = (uint8_t *)json_string;
-            ws_pkt.len = strlen(json_string);
-            ws_pkt.type = HTTPD_WS_TYPE_TEXT;
-            esp_err_t err = httpd_ws_send_frame_async(server, fd, &ws_pkt);
-            free(json_string);
             cJSON_Delete(msg.data);
 
-            if (err != ESP_OK)
-            {
-                ESP_LOGW(TAG, "status_task: async send failed for fd %d, error: %s", fd, esp_err_to_name(err));
-                xSemaphoreTake(client_fd_mutex, portMAX_DELAY);
-                if (client_fd == fd) {
+            xSemaphoreTake(client_fd_mutex, portMAX_DELAY);
+            int fd = client_fd;
+            if (fd > 0) {
+                httpd_ws_frame_t ws_pkt;
+                memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+                ws_pkt.payload = (uint8_t *)json_string;
+                ws_pkt.len = strlen(json_string);
+                ws_pkt.type = HTTPD_WS_TYPE_TEXT;
+                esp_err_t err = httpd_ws_send_frame_async(server, fd, &ws_pkt);
+
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "status_task: async send failed for fd %d, error: %s", fd, esp_err_to_name(err));
                     client_fd = -1;
                 }
-                xSemaphoreGive(client_fd_mutex);
             }
+            xSemaphoreGive(client_fd_mutex);
+            free(json_string);
         } else {
             // Queue receive timed out, send a PING to keep connection alive
             xSemaphoreTake(client_fd_mutex, portMAX_DELAY);
             int fd = client_fd;
-            xSemaphoreGive(client_fd_mutex);
-
             if (fd > 0) {
                 httpd_ws_frame_t ping_pkt;
                 memset(&ping_pkt, 0, sizeof(httpd_ws_frame_t));
                 ping_pkt.type = HTTPD_WS_TYPE_PING;
                 ping_pkt.final = true;
-                if (httpd_ws_send_frame_async(server, fd, &ping_pkt) != ESP_OK) {
-                    ESP_LOGW(TAG, "Failed to send PING frame, closing connection for fd %d", fd);
-                    xSemaphoreTake(client_fd_mutex, portMAX_DELAY);
-                    if (client_fd == fd) {
-                        client_fd = -1;
-                    }
-                    xSemaphoreGive(client_fd_mutex);
+                esp_err_t err = httpd_ws_send_frame_async(server, fd, &ping_pkt);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "Failed to send PING frame, closing connection for fd %d, error: %s", fd, esp_err_to_name(err));
+                    client_fd = -1;
                 }
             }
+            xSemaphoreGive(client_fd_mutex);
         }
     }
 }
@@ -106,8 +94,6 @@ static void ws_sender_task(void *arg)
         if (xQueueReceive(uart_to_ws_queue, &msg, portMAX_DELAY)) {
             xSemaphoreTake(client_fd_mutex, portMAX_DELAY);
             int fd = client_fd;
-            xSemaphoreGive(client_fd_mutex);
-
             if (fd > 0) {
                 httpd_ws_frame_t ws_pkt = {0};
                 ws_pkt.payload = msg.data;
@@ -117,13 +103,10 @@ static void ws_sender_task(void *arg)
                 esp_err_t err = httpd_ws_send_frame_async(server, fd, &ws_pkt);
                 if (err != ESP_OK) {
                     ESP_LOGW(TAG, "ws_sender_task: async send failed for fd %d, error: %s", fd, esp_err_to_name(err));
-                    xSemaphoreTake(client_fd_mutex, portMAX_DELAY);
-                    if (client_fd == fd) {
-                        client_fd = -1;
-                    }
-                    xSemaphoreGive(client_fd_mutex);
+                    client_fd = -1;
                 }
             }
+            xSemaphoreGive(client_fd_mutex);
             free(msg.data);
         }
     }
