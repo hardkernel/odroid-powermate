@@ -109,8 +109,7 @@ static void ws_sender_task(void *arg)
             xSemaphoreGive(client_fd_mutex);
 
             if (fd > 0) {
-                httpd_ws_frame_t ws_pkt;
-                memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
+                httpd_ws_frame_t ws_pkt = {0};
                 ws_pkt.payload = msg.data;
                 ws_pkt.len = msg.len;
                 ws_pkt.type = HTTPD_WS_TYPE_BINARY;
@@ -206,9 +205,8 @@ static esp_err_t ws_handler(httpd_req_t *req) {
         return ESP_OK;
     }
 
-    httpd_ws_frame_t ws_pkt;
+    httpd_ws_frame_t ws_pkt = {0};
     uint8_t buf[BUF_SIZE];
-    memset(&ws_pkt, 0, sizeof(httpd_ws_frame_t));
     ws_pkt.payload = buf;
     ws_pkt.type = HTTPD_WS_TYPE_BINARY;
 
