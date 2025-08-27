@@ -38,9 +38,11 @@ function initialData() {
 /**
  * Creates a common configuration object for a single line chart.
  * @param {string} title - The title of the chart (e.g., 'Power (W)').
+ * @param {number} minValue - The minimum value for Y-axis.
+ * @param {number} maxValue - The maximum value for Y-axis.
  * @returns {Object} A Chart.js options object.
  */
-function createChartOptions(title) {
+function createChartOptions(title, minValue, maxValue) {
     return {
         responsive: true,
         maintainAspectRatio: false,
@@ -51,7 +53,14 @@ function createChartOptions(title) {
         },
         scales: {
             x: { ticks: { autoSkipPadding: 10, maxRotation: 0, minRotation: 0 } },
-            y: { }
+            y: { 
+                min: minValue,
+                max: maxValue,
+                beginAtZero: false,
+                ticks: {
+                    stepSize: (maxValue - minValue) / 8
+                }
+            }
         }
     };
 }
@@ -70,6 +79,7 @@ export function initCharts() {
 
     // Create Power Chart
     if (powerChartCtx) {
+        const powerOptions = createChartOptions('Power', 0, 120);
         charts.power = new Chart(powerChartCtx, {
             type: 'line',
             data: {
@@ -79,12 +89,13 @@ export function initCharts() {
                     { label: 'Avg Power', data: initialData(), borderWidth: 1.5, borderDash: [10, 5], fill: false, tension: 0, pointRadius: 0 }
                 ]
             },
-            options: createChartOptions('Power')
+            options: powerOptions
         });
     }
 
     // Create Voltage Chart
     if (voltageChartCtx) {
+        const voltageOptions = createChartOptions('Voltage', 0, 24);
         charts.voltage = new Chart(voltageChartCtx, {
             type: 'line',
             data: {
@@ -94,12 +105,13 @@ export function initCharts() {
                     { label: 'Avg Voltage', data: initialData(), borderWidth: 1.5, borderDash: [10, 5], fill: false, tension: 0, pointRadius: 0 }
                 ]
             },
-            options: createChartOptions('Voltage')
+            options: voltageOptions
         });
     }
 
     // Create Current Chart
     if (currentChartCtx) {
+        const currentOptions = createChartOptions('Current', 0, 7);
         charts.current = new Chart(currentChartCtx, {
             type: 'line',
             data: {
@@ -109,7 +121,7 @@ export function initCharts() {
                     { label: 'Avg Current', data: initialData(), borderWidth: 1.5, borderDash: [10, 5], fill: false, tension: 0, pointRadius: 0 }
                 ]
             },
-            options: createChartOptions('Current')
+            options: currentOptions
         });
     }
 }
@@ -164,25 +176,12 @@ export function updateCharts(data) {
         chart.data.labels.push(timeLabel);
         chart.data.datasets[0].data.push(value.toFixed(2));
 
-        // Calculate average and adjust Y-axis scale
+        // Calculate average
         const dataArray = chart.data.datasets[0].data.filter(v => v !== null).map(v => parseFloat(v));
         if (dataArray.length > 0) {
             const sum = dataArray.reduce((acc, val) => acc + val, 0);
             const avg = (sum / dataArray.length).toFixed(2);
             chart.data.datasets[1].data.push(avg);
-
-            // Adjust Y-axis scale for centering
-            const minVal = Math.min(...dataArray);
-            const maxVal = Math.max(...dataArray);
-            let padding = (maxVal - minVal) * 0.1; // 10% padding of the range
-
-            if (padding === 0) {
-                // If all values are the same, add 10% padding of the value itself, or a small default
-                padding = maxVal > 0 ? maxVal * 0.1 : 0.1;
-            }
-
-            chart.options.scales.y.min = Math.max(0, minVal - padding);
-            chart.options.scales.y.max = maxVal + padding;
 
         } else {
             chart.data.datasets[1].data.push(null);
