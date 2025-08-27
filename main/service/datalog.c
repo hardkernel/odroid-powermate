@@ -3,12 +3,12 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include "esp_littlefs.h"
 #include "esp_log.h"
 
 static const char* TAG = "DATALOG";
 static const char* LOG_FILE_PATH = "/littlefs/datalog.csv";
-static const char* TEMP_LOG_FILE_PATH = "/littlefs/datalog.tmp";
 #define MAX_LOG_SIZE (1024 * 1024)
 
 void datalog_init(void)
@@ -102,18 +102,10 @@ void datalog_add(uint32_t timestamp, float voltage, float current, float power)
     else
     {
         ESP_LOGI(TAG, "Log file is full. Rotating log file.");
-        FILE* f_read = fopen(LOG_FILE_PATH, "r");
-        if (f_read == NULL)
+        FILE* f = fopen(LOG_FILE_PATH, "r+");
+        if (f == NULL)
         {
-            ESP_LOGE(TAG, "Could not open log for reading");
-            return;
-        }
-
-        FILE* f_write = fopen(TEMP_LOG_FILE_PATH, "w");
-        if (f_write == NULL)
-        {
-            ESP_LOGE(TAG, "Could not open temp file for writing");
-            fclose(f_read);
+            ESP_LOGE(TAG, "Failed to open log file for rotation.");
             return;
         }
 
@@ -121,51 +113,55 @@ void datalog_add(uint32_t timestamp, float voltage, float current, float power)
         char line[256];
 
         // Keep header
-        if (fgets(line, sizeof(line), f_read) != NULL)
-        {
-            fputs(line, f_write);
-        }
-        else
+        if (fgets(line, sizeof(line), f) == NULL)
         {
             ESP_LOGE(TAG, "Could not read header");
-            fclose(f_read);
-            fclose(f_write);
+            fclose(f);
             return;
         }
+        long header_len = strlen(line);
 
+        // Find the starting position of the data to keep (read position)
+        fseek(f, header_len, SEEK_SET);
         long bytes_skipped = 0;
-        while (fgets(line, sizeof(line), f_read) != NULL)
+        while (fgets(line, sizeof(line), f) != NULL)
         {
             bytes_skipped += strlen(line);
             if (bytes_skipped >= size_to_remove)
             {
-                fputs(line, f_write);
                 break;
             }
         }
 
-        while (fgets(line, sizeof(line), f_read) != NULL)
+        long read_pos = ftell(f) - strlen(line);
+        long write_pos = header_len;
+
+        char buffer[256];
+        
+        while (1)
         {
-            fputs(line, f_write);
+            fseek(f, read_pos, SEEK_SET);
+            size_t bytes_read = fread(buffer, 1, sizeof(buffer), f);
+            if (bytes_read == 0)
+            {
+                break;
+            }
+            read_pos = ftell(f);
+
+            fseek(f, write_pos, SEEK_SET);
+            fwrite(buffer, 1, bytes_read, f);
+            write_pos = ftell(f);
         }
 
-        fputs(new_line, f_write);
+        if (ftruncate(fileno(f), write_pos) != 0) {
+            ESP_LOGE(TAG, "Failed to truncate log file.");
+        }
 
-        fclose(f_read);
-        fclose(f_write);
+        fseek(f, 0, SEEK_END);
+        fputs(new_line, f);
+        fclose(f);
 
-        if (remove(LOG_FILE_PATH) != 0)
-        {
-            ESP_LOGE(TAG, "Failed to remove old log file");
-        }
-        else if (rename(TEMP_LOG_FILE_PATH, LOG_FILE_PATH) != 0)
-        {
-            ESP_LOGE(TAG, "Failed to rename temp file");
-        }
-        else
-        {
-            ESP_LOGI(TAG, "Log file rotated successfully.");
-        }
+        ESP_LOGI(TAG, "Log file rotated successfully.");
     }
 }
 
