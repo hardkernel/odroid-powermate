@@ -32,7 +32,7 @@ struct default_value
 };
 
 struct default_value const default_values[] = {
-    {WIFI_SSID, "HK_BOB_24G"},
+    {WIFI_SSID, ""},
     {WIFI_PASSWORD, ""},
     {NETIF_TYPE, "dhcp"},
     {NETIF_HOSTNAME, "powermate"},
