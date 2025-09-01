@@ -8,8 +8,8 @@
 // The WebSocket instance, exported for potential direct access if needed.
 export let websocket;
 
-// The WebSocket server address, derived from the current page's hostname.
-const gateway = `ws://${window.location.hostname}/ws`;
+// The WebSocket server address, derived from the current page's host (hostname + port).
+const gateway = `ws://${window.location.host}/ws`;
 
 /**
  * Initializes the WebSocket connection and sets up event handlers.
