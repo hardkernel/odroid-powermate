@@ -6,7 +6,7 @@
 #include "wifi.h"
 #include "system.h"
 #include "esp_netif.h"
-#include "freertos/task.h"
+#include "esp_timer.h"
 
 static const char* TAG = "webserver";
 
@@ -233,14 +233,9 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
         cJSON* pass_item = cJSON_GetObjectItem(root, "password");
         if (cJSON_IsString(pass_item))
         {
-            nconfig_write(WIFI_SSID, ssid_item->valuestring);
-            nconfig_write(WIFI_PASSWORD, pass_item->valuestring);
-            nconfig_write(NETIF_TYPE, "dhcp"); // Default to DHCP on new connection
-
             httpd_resp_sendstr(req, "{\"status\":\"connection_initiated\"}");
-            wifi_disconnect();
-            vTaskDelay(pdMS_TO_TICKS(500));
-            wifi_connect();
+
+            wifi_sta_set_ap(ssid_item->valuestring, pass_item->valuestring);
         }
         else
         {

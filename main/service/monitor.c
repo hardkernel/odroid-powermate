@@ -11,7 +11,6 @@
 #include "cJSON.h"
 #include "esp_netif.h"
 #include "esp_wifi_types_generic.h"
-#include "ina226.h"
 #include "webserver.h"
 #include "wifi.h"
 #include "datalog.h"
