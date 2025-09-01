@@ -31,6 +31,8 @@ enum nconfig_type
     NCONFIG_TYPE_MAX,
 };
 
+bool nconfig_value_is_not_set(enum nconfig_type type);
+
 // Write config
 esp_err_t nconfig_write(enum nconfig_type type, const char* data);
 

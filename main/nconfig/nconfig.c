@@ -52,9 +52,7 @@ esp_err_t init_nconfig()
     for (int i = 0; i < sizeof(default_values) / sizeof(default_values[0]); ++i)
     {
         // check key is not exist or value is null
-        size_t len = 0;
-        nconfig_get_str_len(default_values[i].type, &len);
-        if (len <= 1) // nconfig_get_str_len return err or value is '\0'
+        if (nconfig_value_is_not_set(default_values[i].type))
         {
             if (nconfig_write(default_values[i].type, default_values[i].value) != ESP_OK)
                 // if nconfig write fail, system panic
@@ -63,6 +61,13 @@ esp_err_t init_nconfig()
     }
 
     return ESP_OK;
+}
+
+bool nconfig_value_is_not_set(enum nconfig_type type)
+{
+    size_t len = 0;
+    esp_err_t err = nconfig_get_str_len(type, &len);
+    return (err != ESP_OK || len <= 1);
 }
 
 esp_err_t nconfig_write(enum nconfig_type type, const char* data)
