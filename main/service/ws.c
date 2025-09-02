@@ -17,7 +17,7 @@
 #define BUF_SIZE (2048)
 #define UART_TX_PIN CONFIG_GPIO_UART_TX
 #define UART_RX_PIN CONFIG_GPIO_UART_RX
-#define CHUNK_SIZE (1024)
+#define CHUNK_SIZE (2048)
 #define PB_UART_BUFFER_SIZE (CHUNK_SIZE + 64)
 
 static const char* TAG = "ws-uart";
@@ -45,6 +45,7 @@ struct bytes_arg
 };
 
 static QueueHandle_t ws_queue;
+static QueueHandle_t uart_event_queue;
 
 static bool encode_bytes_callback(pb_ostream_t* stream, const pb_field_t* field, void* const* arg)
 {
@@ -143,6 +144,7 @@ static void uart_polling_task(void* arg)
 
         size_t read_len = (available_len > BUF_SIZE) ? BUF_SIZE : available_len;
         int bytes_read = uart_read_bytes(UART_NUM, data_buf, read_len, pdMS_TO_TICKS(5));
+        printf("-- %d\n", available_len);
 
         if (bytes_read > 0)
         {
@@ -186,6 +188,37 @@ static void uart_polling_task(void* arg)
                 }
 
                 offset += chunk_size;
+            }
+        }
+    }
+    vTaskDelete(NULL);
+}
+
+static void uart_event_task(void* arg)
+{
+    uart_event_t event;
+    while (1)
+    {
+        if (xQueueReceive(uart_event_queue, &event, portMAX_DELAY))
+        {
+            switch (event.type)
+            {
+            case UART_FIFO_OVF:
+                ESP_LOGW(TAG, "UART HW FIFO Overflow");
+                uart_flush_input(UART_NUM);
+                xQueueReset(uart_event_queue);
+                break;
+            case UART_BUFFER_FULL:
+                ESP_LOGW(TAG, "UART ring buffer full");
+                uart_flush_input(UART_NUM);
+                xQueueReset(uart_event_queue);
+                break;
+            case UART_DATA:
+                // Muting this event because it is too noisy
+                break;
+            default:
+                ESP_LOGI(TAG, "unhandled uart event type: %d", event.type);
+                break;
             }
         }
     }
@@ -255,7 +288,7 @@ void register_ws_endpoint(httpd_handle_t server)
 
     ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE * 2, BUF_SIZE * 2, 20, NULL, 0));
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUF_SIZE * 2, BUF_SIZE * 2, 20, &uart_event_queue, 0));
 
     httpd_uri_t ws = {.uri = "/ws", .method = HTTP_GET, .handler = ws_handler, .user_ctx = NULL, .is_websocket = true};
     httpd_register_uri_handler(server, &ws);
@@ -265,6 +298,7 @@ void register_ws_endpoint(httpd_handle_t server)
 
     xTaskCreate(uart_polling_task, "uart_polling_task", 1024 * 4, NULL, 8, NULL);
     xTaskCreate(unified_ws_sender_task, "ws_sender_task", 1024 * 6, server, 9, NULL);
+    xTaskCreate(uart_event_task, "uart_event_task", 1024 * 2, NULL, 10, NULL);
 }
 
 void push_data_to_ws(const uint8_t* data, size_t len)
