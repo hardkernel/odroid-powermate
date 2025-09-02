@@ -68,6 +68,7 @@ void start_webserver(void)
     config.stack_size = 1024 * 8;
     config.max_uri_handlers = 10;
     config.task_priority = 12;
+    config.max_open_sockets = 7;
 
     if (httpd_start(&server, &config) != ESP_OK)
     {
