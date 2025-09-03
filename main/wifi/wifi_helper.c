@@ -138,7 +138,7 @@ void time_sync_notification_cb(struct timeval* tv)
     time(&now);
     localtime_r(&now, &timeinfo);
     strftime(strftime_buf, sizeof(strftime_buf), "%c", &timeinfo);
-    ESP_LOGI(TAG, "The current date/time in KST is: %s", strftime_buf);
+    ESP_LOGI(TAG, "The current date/time in UTC is: %s", strftime_buf);
 }
 
 void initialize_sntp(void)
