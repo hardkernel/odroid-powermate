@@ -28,11 +28,18 @@ message UartData {
   bytes data = 1;
 }
 
+// Contains load sw status
+message LoadSwStatus {
+  bool main = 1;
+  bool usb = 2;
+}
+
 // Top-level message for all websocket communication
 message StatusMessage {
    oneof payload {
     SensorData sensor_data = 1;
     WifiStatus wifi_status = 2;
-    UartData uart_data = 3;
+     LoadSwStatus sw_status = 3;
+     UartData uart_data = 4;
   }
 }

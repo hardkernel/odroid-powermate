@@ -14,7 +14,11 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "pb.h"
+#include "pb_encode.h"
 #include "pca9557.h"
+#include "status.pb.h"
+#include "webserver.h"
 
 #define I2C_PORT 0
 
@@ -28,6 +32,8 @@
 #define POWER_DELAY (CONFIG_TRIGGER_POWER_DELAY_MS * 1000)
 #define RESET_DELAY (CONFIG_TRIGGER_RESET_DELAY_MS * 1000)
 
+#define PB_BUFFER_SIZE 256
+
 static const char* TAG = "control";
 
 static bool load_switch_12v_status = false;
@@ -40,6 +46,28 @@ static i2c_dev_t pca = {0};
 
 static esp_timer_handle_t power_trigger_timer;
 static esp_timer_handle_t reset_trigger_timer;
+
+static void send_sw_status_message()
+{
+    StatusMessage message = StatusMessage_init_zero;
+    message.which_payload = StatusMessage_sw_status_tag;
+    LoadSwStatus* sw_status = &message.payload.sw_status;
+
+    sw_status->main = load_switch_12v_status;
+    sw_status->usb = load_switch_5v_status;
+
+    uint8_t buffer[PB_BUFFER_SIZE];
+    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+
+    if (!pb_encode(&stream, StatusMessage_fields, &message))
+    {
+        ESP_LOGE(TAG, "Failed to encode protobuf message: %s", PB_GET_ERROR(&stream));
+        return;
+    }
+
+    push_data_to_ws(buffer, stream.bytes_written);
+}
+
 
 static void trigger_off_callback(void* arg)
 {
@@ -69,6 +97,8 @@ void config_sw()
     load_switch_12v_status = val != 0 ? true : false;
     ESP_ERROR_CHECK(pca9557_get_level(&pca, CONFIG_EXPANDER_GPIO_SW_5V, &val));
     load_switch_5v_status = val != 0 ? true : false;
+
+    send_sw_status_message();
 }
 
 void init_sw()
@@ -127,9 +157,9 @@ void set_main_load_switch(bool on)
         return;
     }
     pca9557_set_level(&pca, GPIO_MAIN, on);
-    xSemaphoreGive(expander_mutex);
     load_switch_12v_status = on;
     xSemaphoreGive(expander_mutex);
+    send_sw_status_message();
 }
 
 void set_usb_load_switch(bool on)
@@ -143,9 +173,9 @@ void set_usb_load_switch(bool on)
         return;
     }
     pca9557_set_level(&pca, GPIO_USB, on);
-    xSemaphoreGive(expander_mutex);
     load_switch_5v_status = on;
     xSemaphoreGive(expander_mutex);
+    send_sw_status_message();
 }
 
 bool get_main_load_switch() { return load_switch_12v_status; }

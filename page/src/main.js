@@ -19,6 +19,7 @@ import {
     initUI,
     updateControlStatus,
     updateSensorUI,
+    updateSwitchStatusUI,
     updateUptimeUI,
     updateWebsocketStatus,
     updateWifiStatusUI
@@ -83,6 +84,12 @@ function onWsMessage(event) {
 
             case 'wifiStatus':
                 updateWifiStatusUI(decodedMessage.wifiStatus);
+                break;
+
+            case 'swStatus':
+                if (decodedMessage.swStatus) {
+                    updateSwitchStatusUI(decodedMessage.swStatus);
+                }
                 break;
 
             case 'uartData':

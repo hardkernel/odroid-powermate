@@ -62,6 +62,21 @@ export function updateUptimeUI(uptimeInSeconds) {
 }
 
 /**
+ * Updates the power switch toggle states based on WebSocket data.
+ * @param {Object} swStatus - The switch status object from the WebSocket message.
+ */
+export function updateSwitchStatusUI(swStatus) {
+    if (swStatus) {
+        if (swStatus.main !== undefined) {
+            dom.mainPowerToggle.checked = swStatus.main;
+        }
+        if (swStatus.usb !== undefined) {
+            dom.usbPowerToggle.checked = swStatus.usb;
+        }
+    }
+}
+
+/**
  * Updates the Wi-Fi status indicator in the header.
  * @param {Object} data - The Wi-Fi status object from the WebSocket.
  */

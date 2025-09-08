@@ -18,7 +18,7 @@ PB_BIND(WifiStatus, WifiStatus, AUTO)
 PB_BIND(UartData, UartData, AUTO)
 
 
+PB_BIND(LoadSwStatus, LoadSwStatus, AUTO)
+
+
 PB_BIND(StatusMessage, StatusMessage, AUTO)
-
-
-
