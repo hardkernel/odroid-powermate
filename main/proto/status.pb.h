@@ -11,16 +11,14 @@
 
 /* Struct definitions */
 /* Represents data for a single sensor channel */
-typedef struct _SensorChannelData
-{
+typedef struct _SensorChannelData {
     float voltage;
     float current;
     float power;
 } SensorChannelData;
 
 /* Contains data for all sensor channels and system info */
-typedef struct _SensorData
-{
+typedef struct _SensorData {
     bool has_usb;
     SensorChannelData usb;
     bool has_main;
@@ -32,32 +30,27 @@ typedef struct _SensorData
 } SensorData;
 
 /* Contains WiFi connection status */
-typedef struct _WifiStatus
-{
+typedef struct _WifiStatus {
     bool connected;
     pb_callback_t ssid;
     int32_t rssi;
 } WifiStatus;
 
 /* Contains raw UART data */
-typedef struct _UartData
-{
+typedef struct _UartData {
     pb_callback_t data;
 } UartData;
 
 /* Contains load sw status */
-typedef struct _LoadSwStatus
-{
+typedef struct _LoadSwStatus {
     bool main;
     bool usb;
 } LoadSwStatus;
 
 /* Top-level message for all websocket communication */
-typedef struct _StatusMessage
-{
+typedef struct _StatusMessage {
     pb_size_t which_payload;
-    union
-    {
+    union {
         SensorData sensor_data;
         WifiStatus wifi_status;
         LoadSwStatus sw_status;
@@ -71,100 +64,82 @@ extern "C" {
 #endif
 
 /* Initializer values for message structs */
-#define SensorChannelData_init_default {0, 0, 0}
-#define SensorData_init_default                                                                                        \
-    {false, SensorChannelData_init_default, false, SensorChannelData_init_default,                                     \
-     false, SensorChannelData_init_default, 0,     0}
-#define WifiStatus_init_default {0, {{NULL}, NULL}, 0}
-#define UartData_init_default                                                                                          \
-    {                                                                                                                  \
-        {                                                                                                              \
-            {NULL}, NULL                                                                                               \
-        }                                                                                                              \
-    }
-#define LoadSwStatus_init_default {0, 0}
-#define StatusMessage_init_default                                                                                     \
-    {                                                                                                                  \
-        0, { SensorData_init_default }                                                                                 \
-    }
-#define SensorChannelData_init_zero {0, 0, 0}
-#define SensorData_init_zero                                                                                           \
-    {false, SensorChannelData_init_zero, false, SensorChannelData_init_zero, false, SensorChannelData_init_zero, 0, 0}
-#define WifiStatus_init_zero {0, {{NULL}, NULL}, 0}
-#define UartData_init_zero                                                                                             \
-    {                                                                                                                  \
-        {                                                                                                              \
-            {NULL}, NULL                                                                                               \
-        }                                                                                                              \
-    }
-#define LoadSwStatus_init_zero {0, 0}
-#define StatusMessage_init_zero                                                                                        \
-    {                                                                                                                  \
-        0, { SensorData_init_zero }                                                                                    \
-    }
+#define SensorChannelData_init_default           {0, 0, 0}
+#define SensorData_init_default                  {false, SensorChannelData_init_default, false, SensorChannelData_init_default, false, SensorChannelData_init_default, 0, 0}
+#define WifiStatus_init_default                  {0, {{NULL}, NULL}, 0}
+#define UartData_init_default                    {{{NULL}, NULL}}
+#define LoadSwStatus_init_default                {0, 0}
+#define StatusMessage_init_default               {0, {SensorData_init_default}}
+#define SensorChannelData_init_zero              {0, 0, 0}
+#define SensorData_init_zero                     {false, SensorChannelData_init_zero, false, SensorChannelData_init_zero, false, SensorChannelData_init_zero, 0, 0}
+#define WifiStatus_init_zero                     {0, {{NULL}, NULL}, 0}
+#define UartData_init_zero                       {{{NULL}, NULL}}
+#define LoadSwStatus_init_zero                   {0, 0}
+#define StatusMessage_init_zero                  {0, {SensorData_init_zero}}
 
 /* Field tags (for use in manual encoding/decoding) */
-#define SensorChannelData_voltage_tag 1
-#define SensorChannelData_current_tag 2
-#define SensorChannelData_power_tag 3
-#define SensorData_usb_tag 1
-#define SensorData_main_tag 2
-#define SensorData_vin_tag 3
-#define SensorData_timestamp_tag 4
-#define SensorData_uptime_sec_tag 5
-#define WifiStatus_connected_tag 1
-#define WifiStatus_ssid_tag 2
-#define WifiStatus_rssi_tag 3
-#define UartData_data_tag 1
-#define LoadSwStatus_main_tag 1
-#define LoadSwStatus_usb_tag 2
-#define StatusMessage_sensor_data_tag 1
-#define StatusMessage_wifi_status_tag 2
-#define StatusMessage_sw_status_tag 3
-#define StatusMessage_uart_data_tag 4
+#define SensorChannelData_voltage_tag            1
+#define SensorChannelData_current_tag            2
+#define SensorChannelData_power_tag              3
+#define SensorData_usb_tag                       1
+#define SensorData_main_tag                      2
+#define SensorData_vin_tag                       3
+#define SensorData_timestamp_tag                 4
+#define SensorData_uptime_sec_tag                5
+#define WifiStatus_connected_tag                 1
+#define WifiStatus_ssid_tag                      2
+#define WifiStatus_rssi_tag                      3
+#define UartData_data_tag                        1
+#define LoadSwStatus_main_tag                    1
+#define LoadSwStatus_usb_tag                     2
+#define StatusMessage_sensor_data_tag            1
+#define StatusMessage_wifi_status_tag            2
+#define StatusMessage_sw_status_tag              3
+#define StatusMessage_uart_data_tag              4
 
 /* Struct field encoding specification for nanopb */
-#define SensorChannelData_FIELDLIST(X, a)                                                                              \
-    X(a, STATIC, SINGULAR, FLOAT, voltage, 1)                                                                          \
-    X(a, STATIC, SINGULAR, FLOAT, current, 2)                                                                          \
-    X(a, STATIC, SINGULAR, FLOAT, power, 3)
+#define SensorChannelData_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, FLOAT,    voltage,           1) \
+X(a, STATIC,   SINGULAR, FLOAT,    current,           2) \
+X(a, STATIC,   SINGULAR, FLOAT,    power,             3)
 #define SensorChannelData_CALLBACK NULL
 #define SensorChannelData_DEFAULT NULL
 
-#define SensorData_FIELDLIST(X, a)                                                                                     \
-    X(a, STATIC, OPTIONAL, MESSAGE, usb, 1)                                                                            \
-    X(a, STATIC, OPTIONAL, MESSAGE, main, 2)                                                                           \
-    X(a, STATIC, OPTIONAL, MESSAGE, vin, 3)                                                                            \
-    X(a, STATIC, SINGULAR, UINT32, timestamp, 4)                                                                       \
-    X(a, STATIC, SINGULAR, UINT32, uptime_sec, 5)
+#define SensorData_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  usb,               1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  main,              2) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  vin,               3) \
+X(a, STATIC,   SINGULAR, UINT32,   timestamp,         4) \
+X(a, STATIC,   SINGULAR, UINT32,   uptime_sec,        5)
 #define SensorData_CALLBACK NULL
 #define SensorData_DEFAULT NULL
 #define SensorData_usb_MSGTYPE SensorChannelData
 #define SensorData_main_MSGTYPE SensorChannelData
 #define SensorData_vin_MSGTYPE SensorChannelData
 
-#define WifiStatus_FIELDLIST(X, a)                                                                                     \
-    X(a, STATIC, SINGULAR, BOOL, connected, 1)                                                                         \
-    X(a, CALLBACK, SINGULAR, STRING, ssid, 2)                                                                          \
-    X(a, STATIC, SINGULAR, INT32, rssi, 3)
+#define WifiStatus_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     connected,         1) \
+X(a, CALLBACK, SINGULAR, STRING,   ssid,              2) \
+X(a, STATIC,   SINGULAR, INT32,    rssi,              3)
 #define WifiStatus_CALLBACK pb_default_field_callback
 #define WifiStatus_DEFAULT NULL
 
-#define UartData_FIELDLIST(X, a) X(a, CALLBACK, SINGULAR, BYTES, data, 1)
+#define UartData_FIELDLIST(X, a) \
+X(a, CALLBACK, SINGULAR, BYTES,    data,              1)
 #define UartData_CALLBACK pb_default_field_callback
 #define UartData_DEFAULT NULL
 
-#define LoadSwStatus_FIELDLIST(X, a)                                                                                   \
-    X(a, STATIC, SINGULAR, BOOL, main, 1)                                                                              \
-    X(a, STATIC, SINGULAR, BOOL, usb, 2)
+#define LoadSwStatus_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, BOOL,     main,              1) \
+X(a, STATIC,   SINGULAR, BOOL,     usb,               2)
 #define LoadSwStatus_CALLBACK NULL
 #define LoadSwStatus_DEFAULT NULL
 
-#define StatusMessage_FIELDLIST(X, a)                                                                                  \
-    X(a, STATIC, ONEOF, MESSAGE, (payload, sensor_data, payload.sensor_data), 1)                                       \
-    X(a, STATIC, ONEOF, MESSAGE, (payload, wifi_status, payload.wifi_status), 2)                                       \
-    X(a, STATIC, ONEOF, MESSAGE, (payload, sw_status, payload.sw_status), 3)                                           \
-    X(a, STATIC, ONEOF, MESSAGE, (payload, uart_data, payload.uart_data), 4)
+#define StatusMessage_FIELDLIST(X, a) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,sensor_data,payload.sensor_data),   1) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,wifi_status,payload.wifi_status),   2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,sw_status,payload.sw_status),   3) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,uart_data,payload.uart_data),   4)
 #define StatusMessage_CALLBACK NULL
 #define StatusMessage_DEFAULT NULL
 #define StatusMessage_payload_sensor_data_MSGTYPE SensorData
@@ -191,10 +166,10 @@ extern const pb_msgdesc_t StatusMessage_msg;
 /* WifiStatus_size depends on runtime parameters */
 /* UartData_size depends on runtime parameters */
 /* StatusMessage_size depends on runtime parameters */
-#define LoadSwStatus_size 4
-#define STATUS_PB_H_MAX_SIZE SensorData_size
-#define SensorChannelData_size 15
-#define SensorData_size 63
+#define LoadSwStatus_size                        4
+#define STATUS_PB_H_MAX_SIZE                     SensorData_size
+#define SensorChannelData_size                   15
+#define SensorData_size                          63
 
 #ifdef __cplusplus
 } /* extern "C" */

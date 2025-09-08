@@ -22,3 +22,6 @@ PB_BIND(LoadSwStatus, LoadSwStatus, AUTO)
 
 
 PB_BIND(StatusMessage, StatusMessage, AUTO)
+
+
+
