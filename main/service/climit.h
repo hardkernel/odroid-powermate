@@ -11,7 +11,7 @@
 
 #define VIN_CURRENT_LIMIT_MAX 8.0f
 #define MAIN_CURRENT_LIMIT_MAX 7.5f
-#define USB_CURRENT_LIMIT_MAX 3.5f
+#define USB_CURRENT_LIMIT_MAX 4.5f
 
 esp_err_t climit_set_vin(double value);
 esp_err_t climit_set_main(double value);
