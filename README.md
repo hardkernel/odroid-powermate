@@ -20,7 +20,7 @@ This project provides a comprehensive web interface to control power, monitor re
 
 Before you begin, ensure you have the following installed and configured on your system:
 
-- **[ESP-IDF (Espressif IoT Development Framework)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/get-started/index.html)**: This project is developed and tested with ESP-IDF v5.x.
+- **[ESP-IDF (Espressif IoT Development Framework)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/get-started/index.html)**: This project is developed and tested with ESP-IDF v5.4 or later.
 - **[Node.js and npm](https://nodejs.org/)**: Required to build the web application. Node.js LTS version (e.g., 18.x or later) is recommended.
 - **[Nanopb](https://github.com/nanopb/nanopb)**: Required to build for protobuf.
 
