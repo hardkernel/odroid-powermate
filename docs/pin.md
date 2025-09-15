@@ -41,6 +41,7 @@ Outputs the switched power from the J5 input.
 ## J7 USB Power Out
 
 Switched 5v voltage output.
+The output is set to 5.25V considering voltage drop. Please use with caution.
 
 ## J8 OLED Display Connector
 
