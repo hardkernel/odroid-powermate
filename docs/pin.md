@@ -17,7 +17,7 @@ Connected to the `U0RXD`, `U0TXD` system UART of the ESP32-C3. Currently not use
 ## J3 ODROID UART Connector
 
 Connects to the UART debug port of the ODROID.
-You can use the [cable from the USB-UART 2 board](https://www.hardkernel.com/shop/usb-uart-2-module-kit-copy/).
+This connector is `X8821WRS-04`. you can use the [cable from the USB-UART 2 board](https://www.hardkernel.com/shop/usb-uart-2-module-kit-copy/).
 
 ## J4 GPIO Output
 
