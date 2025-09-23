@@ -45,9 +45,9 @@ struct default_value const default_values[] = {
     {WIFI_MODE, "apsta"},
     {AP_SSID, "odroid-pm"},
     {AP_PASSWORD, "powermate"},
-    {VIN_CURRENT_LIMIT, "8.0"},
-    {MAIN_CURRENT_LIMIT, "7.0"},
-    {USB_CURRENT_LIMIT, "5.0"},
+    {VIN_CURRENT_LIMIT, "4.0"},
+    {MAIN_CURRENT_LIMIT, "3.0"},
+    {USB_CURRENT_LIMIT, "3.0"},
 };
 
 esp_err_t init_nconfig()
