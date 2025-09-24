@@ -69,3 +69,12 @@ add_custom_target(protobuf_generate ALL
 
 add_dependencies(${COMPONENT_LIB} build_web_app)
 add_dependencies(${COMPONENT_LIB} protobuf_generate)
+
+execute_process(
+        COMMAND git rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_HASH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+add_compile_definitions(VERSION_HASH="${GIT_HASH}")
