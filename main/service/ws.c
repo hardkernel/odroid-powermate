@@ -193,7 +193,6 @@ static void uart_event_task(void* arg)
                 // Muting this event because it is too noisy
                 break;
             default:
-                ESP_LOGI(TAG, "unhandled uart event type: %d", event.type);
                 break;
             }
         }
