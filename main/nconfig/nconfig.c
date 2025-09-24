@@ -4,6 +4,8 @@
 
 #include "nconfig.h"
 
+#include "indicator.h"
+#include "system.h"
 #include "esp_err.h"
 #include "nvs_flash.h"
 
@@ -68,6 +70,13 @@ esp_err_t init_nconfig()
     }
 
     return ESP_OK;
+}
+
+void reset_nconfig()
+{
+    nvs_erase_all(handle);
+    led_set(LED_RED, BLINK_FAST);
+    start_reboot_timer(1);
 }
 
 bool nconfig_value_is_not_set(enum nconfig_type type)

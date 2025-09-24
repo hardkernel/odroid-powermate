@@ -46,6 +46,11 @@ enum nconfig_type
 };
 
 /**
+ * @brief Erase all of nvs data and restart system
+ */
+void reset_nconfig();
+
+/**
  * @brief Checks if a specific configuration value has been set.
  *
  * @param type The configuration key to check.
