@@ -111,6 +111,16 @@ export function updateWifiStatusUI(data) {
 }
 
 /**
+ * Updates the version information in the footer.
+ * @param {string} version - The firmware version string.
+ */
+export function updateVersionUI(version) {
+    if (version) {
+        dom.versionInfo.textContent = `${version}`;
+    }
+}
+
+/**
  * Initiates a Wi-Fi scan and updates the settings modal with the results.
  */
 export async function scanForWifi() {

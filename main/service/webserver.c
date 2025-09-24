@@ -87,5 +87,7 @@ void start_webserver(void)
     register_ws_endpoint(server);
     register_control_endpoint(server);
     register_reboot_endpoint(server);
+    register_version_endpoint(server);
+
     init_status_monitor();
 }

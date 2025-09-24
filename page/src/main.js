@@ -12,6 +12,7 @@ import './style.css';
 
 // --- Module Imports -- -
 import {StatusMessage} from './proto.js';
+import * as api from './api.js';
 import {initWebSocket} from './websocket.js';
 import {setupTerminal, term} from './terminal.js';
 import {
@@ -21,6 +22,7 @@ import {
     updateSensorUI,
     updateSwitchStatusUI,
     updateUptimeUI,
+    updateVersionUI,
     updateWebsocketStatus,
     updateWifiStatusUI
 } from './ui.js';
@@ -112,6 +114,18 @@ function onWsMessage(event) {
 
 // --- Application Initialization ---
 
+async function initializeVersion() {
+    try {
+        const versionData = await api.fetchVersion();
+        if (versionData && versionData.version) {
+            updateVersionUI(versionData.version);
+        }
+    } catch (error) {
+        console.error('Error fetching version:', error);
+        updateVersionUI('N/A');
+    }
+}
+
 function connect() {
     updateControlStatus();
     initWebSocket({ onOpen: onWsOpen, onClose: onWsClose, onMessage: onWsMessage });
@@ -120,6 +134,7 @@ function connect() {
 function initialize() {
     initUI();
     setupTerminal();
+    initializeVersion();
 
     const savedTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
     applyTheme(savedTheme);

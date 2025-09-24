@@ -77,3 +77,19 @@ void register_reboot_endpoint(httpd_handle_t server)
         .uri = "/api/reboot", .method = HTTP_POST, .handler = reboot_post_handler, .user_ctx = NULL};
     httpd_register_uri_handler(server, &post_uri);
 }
+
+static esp_err_t version_get_handler(httpd_req_t* req)
+{
+    httpd_resp_set_type(req, "application/json");
+    char buf[100];
+    sprintf(buf, "{\"version\": \"%s\"}", VERSION_HASH);
+    httpd_resp_send(req, buf, strlen(buf));
+    return ESP_OK;
+}
+
+void register_version_endpoint(httpd_handle_t server)
+{
+    httpd_uri_t post_uri = {
+        .uri = "/api/version", .method = HTTP_GET, .handler = version_get_handler, .user_ctx = NULL};
+    httpd_register_uri_handler(server, &post_uri);
+}

@@ -86,3 +86,6 @@ export const mainValueSpan = document.getElementById('main-current-limit-value')
 export const usbSlider = document.getElementById('usb-current-limit-slider');
 export const usbValueSpan = document.getElementById('usb-current-limit-value');
 export const currentLimitApplyButton = document.getElementById('current-limit-apply-button');
+
+// --- Footer ---
+export const versionInfo = document.getElementById('version-info');

@@ -110,3 +110,14 @@ export async function postControlCommand(command) {
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     return response;
 }
+
+/**
+ * Fetches the firmware version from the server.
+ * @returns {Promise<Object>} A promise that resolves to an object containing the version.
+ * @throws {Error} Throws an error if the network request fails.
+ */
+export async function fetchVersion() {
+    const response = await fetch('/api/version');
+    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+    return await response.json();
+}

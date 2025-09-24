@@ -15,5 +15,6 @@ void register_control_endpoint(httpd_handle_t server);
 void push_data_to_ws(const uint8_t* data, size_t len);
 void register_reboot_endpoint(httpd_handle_t server);
 esp_err_t change_baud_rate(int baud_rate);
+void register_version_endpoint(httpd_handle_t server);
 
 #endif // ODROID_REMOTE_HTTP_WEBSERVER_H
