@@ -6,7 +6,6 @@
 #include <nconfig.h>
 #include <time.h>
 #include "climit.h"
-#include "datalog.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
@@ -94,8 +93,6 @@ static void sensor_timer_callback(void* arg)
     uint32_t uptime_sec = (uint32_t)(uptime_us / 1000000);
     uint32_t timestamp = (uint32_t)time(NULL);
 
-    channel_data_t channel_data_log[NUM_CHANNELS];
-
     StatusMessage message = StatusMessage_init_zero;
     message.which_payload = StatusMessage_sensor_data_tag;
     SensorData* sensor_data = &message.payload.sensor_data;
@@ -114,9 +111,6 @@ static void sensor_timer_callback(void* arg)
 
         current /= 1000.0f; // mA to A
         power = voltage * current;
-
-        // For datalog
-        channel_data_log[i] = (channel_data_t){.voltage = voltage, .current = current, .power = power};
 
         // For protobuf
         channels[i]->voltage = voltage;
@@ -281,8 +275,6 @@ void init_status_monitor()
     nconfig_read(USB_CURRENT_LIMIT, buf, sizeof(buf));
     lim = atof(buf);
     climit_set_usb(lim);
-
-    datalog_init();
 
     const esp_timer_create_args_t sensor_timer_args = {.callback = &sensor_timer_callback,
                                                        .name = "sensor_reading_timer"};
