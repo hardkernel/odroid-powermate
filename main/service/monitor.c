@@ -280,13 +280,14 @@ void init_status_monitor()
                                                        .name = "sensor_reading_timer"};
     const esp_timer_create_args_t wifi_timer_args = {.callback = &status_wifi_callback, .name = "wifi_status_timer"};
     const esp_timer_create_args_t long_press_timer_args = {.callback = &long_press_timer_callback,
-                                                       .name = "long_press_timer"};
+                                                           .name = "long_press_timer"};
 
     ESP_ERROR_CHECK(esp_timer_create(&sensor_timer_args, &sensor_timer));
     ESP_ERROR_CHECK(esp_timer_create(&wifi_timer_args, &wifi_status_timer));
     ESP_ERROR_CHECK(esp_timer_create(&long_press_timer_args, &long_press_timer));
 
-    xTaskCreate(shutdown_load_sw_task, "shutdown_sw_task", configMINIMAL_STACK_SIZE * 3, NULL, 15, &shutdown_task_handle);
+    xTaskCreate(shutdown_load_sw_task, "shutdown_sw_task", configMINIMAL_STACK_SIZE * 3, NULL, 15,
+                &shutdown_task_handle);
 
     ESP_ERROR_CHECK(esp_timer_start_periodic(sensor_timer, 1000000));
     ESP_ERROR_CHECK(esp_timer_start_periodic(wifi_status_timer, 1000000 * 5));

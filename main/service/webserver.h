@@ -5,9 +5,9 @@
 #ifndef ODROID_REMOTE_HTTP_WEBSERVER_H
 #define ODROID_REMOTE_HTTP_WEBSERVER_H
 
-#include "esp_http_server.h"
 #include <stddef.h>
 #include <stdint.h>
+#include "esp_http_server.h"
 
 void register_wifi_endpoint(httpd_handle_t server);
 void register_ws_endpoint(httpd_handle_t server);

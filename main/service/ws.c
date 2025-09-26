@@ -2,6 +2,7 @@
 // Created by shinys on 25. 8. 18..
 //
 
+#include "auth.h"
 #include "driver/uart.h"
 #include "esp_err.h"
 #include "esp_http_server.h"
@@ -13,7 +14,6 @@
 #include "pb_encode.h"
 #include "status.pb.h"
 #include "webserver.h"
-#include "auth.h"
 
 #define UART_NUM UART_NUM_1
 #define BUF_SIZE (2048)
@@ -210,14 +210,17 @@ static esp_err_t ws_handler(httpd_req_t* req)
 
         char* query_str = NULL;
         size_t query_len = httpd_req_get_url_query_len(req) + 1;
-        if (query_len > 1) {
+        if (query_len > 1)
+        {
             query_str = malloc(query_len);
-            if (query_str == NULL) {
+            if (query_str == NULL)
+            {
                 ESP_LOGE(TAG, "Failed to allocate memory for query string");
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal Server Error");
                 return ESP_FAIL;
             }
-            if (httpd_req_get_url_query_str(req, query_str, query_len) != ESP_OK) {
+            if (httpd_req_get_url_query_str(req, query_str, query_len) != ESP_OK)
+            {
                 ESP_LOGE(TAG, "Failed to get query string from URI: %s", req->uri);
                 free(query_str);
                 httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Internal Server Error");
@@ -229,21 +232,27 @@ static esp_err_t ws_handler(httpd_req_t* req)
         char token_str[TOKEN_LENGTH];
         esp_err_t err = ESP_FAIL; // Default to fail
 
-        if (query_str) {
+        if (query_str)
+        {
             err = httpd_query_key_value(query_str, "token", token_str, sizeof(token_str));
             free(query_str); // Free allocated query string
         }
 
-        if (err == ESP_OK) {
+        if (err == ESP_OK)
+        {
             ESP_LOGI(TAG, "Token extracted from query string, value: %s", token_str);
-            if (!auth_validate_token(token_str)) {
+            if (!auth_validate_token(token_str))
+            {
                 ESP_LOGW(TAG, "WebSocket connection attempt with invalid token for URI: %s", req->uri);
                 httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Invalid or expired token");
                 return ESP_FAIL;
             }
             ESP_LOGD(TAG, "WebSocket token validated for URI: %s", req->uri);
-        } else {
-            ESP_LOGW(TAG, "Failed to extract token from query string or query string not found, error: %s", esp_err_to_name(err));
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Failed to extract token from query string or query string not found, error: %s",
+                     esp_err_to_name(err));
             httpd_resp_send_err(req, HTTPD_401_UNAUTHORIZED, "Authorization token required");
             return ESP_FAIL;
         }

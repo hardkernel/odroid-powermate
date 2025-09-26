@@ -1,3 +1,4 @@
+#include "auth.h"
 #include "cJSON.h"
 #include "driver/gpio.h"
 #include "esp_http_server.h"
@@ -5,12 +6,12 @@
 #include "freertos/FreeRTOS.h"
 #include "sw.h"
 #include "webserver.h"
-#include "auth.h"
 
 static esp_err_t control_get_handler(httpd_req_t* req)
 {
     esp_err_t err = api_auth_check(req);
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         return err;
     }
 
@@ -32,7 +33,8 @@ static esp_err_t control_get_handler(httpd_req_t* req)
 static esp_err_t control_post_handler(httpd_req_t* req)
 {
     esp_err_t err = api_auth_check(req);
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         return err;
     }
 

@@ -1,4 +1,5 @@
 #include <stdlib.h>
+#include "auth.h"
 #include "cJSON.h"
 #include "climit.h"
 #include "esp_http_server.h"
@@ -8,14 +9,14 @@
 #include "nconfig.h"
 #include "webserver.h"
 #include "wifi.h"
-#include "auth.h"
 
 static const char* TAG = "webserver";
 
 static esp_err_t setting_get_handler(httpd_req_t* req)
 {
     esp_err_t err = api_auth_check(req);
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         return err;
     }
 
@@ -110,7 +111,8 @@ static esp_err_t setting_get_handler(httpd_req_t* req)
 static esp_err_t wifi_scan(httpd_req_t* req)
 {
     esp_err_t err = api_auth_check(req);
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         return err;
     }
 
@@ -145,7 +147,8 @@ static esp_err_t wifi_scan(httpd_req_t* req)
 static esp_err_t setting_post_handler(httpd_req_t* req)
 {
     esp_err_t err = api_auth_check(req);
-    if (err != ESP_OK) {
+    if (err != ESP_OK)
+    {
         return err;
     }
 
