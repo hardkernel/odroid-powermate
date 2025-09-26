@@ -28,7 +28,6 @@ function startHeartbeat() {
     pingIntervalId = setInterval(() => {
         if (websocket && websocket.readyState === WebSocket.OPEN) {
             websocket.send('ping');
-            console.log('WebSocket: Ping sent.');
 
             // Set a timeout to check if a pong is received within HEARTBEAT_TIMEOUT
             pongTimeoutId = setTimeout(() => {
@@ -94,7 +93,6 @@ export function initWebSocket({onOpen, onClose, onMessage, onError}) {
 
     websocket.onmessage = (event) => {
         if (event.data === 'pong') {
-            console.log('WebSocket: Pong received.');
             // Clear the timeout as pong was received, resetting for the next ping
             clearTimeout(pongTimeoutId);
             pongTimeoutId = null;

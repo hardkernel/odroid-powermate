@@ -7,10 +7,10 @@
 
 import * as dom from './dom.js';
 import * as api from './api.js';
+import {getAuthHeaders, handleResponse} from './api.js'; // Import auth functions
 import * as ui from './ui.js';
 import {clearTerminal, downloadTerminalOutput, fitTerminal} from './terminal.js';
 import {debounce, isMobile} from './utils.js';
-import {getAuthHeaders, handleResponse} from './api.js'; // Import auth functions
 
 // A flag to track if charts have been initialized
 let chartsInitialized = false;
@@ -60,7 +60,6 @@ export function setupEventListeners() {
         console.log("Event listeners already attached. Skipping.");
         return;
     }
-    console.log("Attaching event listeners...");
 
     // --- Terminal Controls ---
     dom.clearButton.addEventListener('click', clearTerminal);
@@ -189,5 +188,4 @@ export function setupEventListeners() {
     window.addEventListener('resize', debounce(ui.handleResize, 150));
 
     listenersAttached = true;
-    console.log("Event listeners attached successfully.");
 }
