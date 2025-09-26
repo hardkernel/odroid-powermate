@@ -16,7 +16,7 @@ endif ()
 
 # Register the component. Now, CMake knows how GZ_OUTPUT_FILE is generated
 # and can correctly handle the dependency for embedding.
-idf_component_register(SRC_DIRS "app" "nconfig" "wifi" "indicator" "system" "service" "proto"
+idf_component_register(SRC_DIRS "app" "nconfig" "wifi" "indicator" "service" "proto"
         INCLUDE_DIRS "include" "proto"
         EMBED_FILES ${GZ_OUTPUT_FILE}
 )
