@@ -9,7 +9,7 @@
 export let websocket;
 
 // The WebSocket server address, derived from the current page's host (hostname + port).
-const gateway = `ws://${window.location.host}/ws`;
+const baseGateway = `ws://${window.location.host}/ws`;
 
 /**
  * Initializes the WebSocket connection and sets up event handlers.
@@ -19,6 +19,13 @@ const gateway = `ws://${window.location.host}/ws`;
  * @param {function} callbacks.onMessage - Called when a message is received from the server.
  */
 export function initWebSocket({onOpen, onClose, onMessage}) {
+    const token = localStorage.getItem('authToken');
+    let gateway = baseGateway;
+
+    if (token) {
+        gateway = `${baseGateway}?token=${token}`;
+    }
+
     console.log(`Trying to open a WebSocket connection to ${gateway}...`);
     websocket = new WebSocket(gateway);
     // Set binary type to arraybuffer to handle raw binary data from the UART.

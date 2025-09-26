@@ -238,14 +238,17 @@ function initialize() {
     // Always attach login form listener
     loginForm.addEventListener('submit', handleLogin);
 
-    if (checkAuth()) { // Check authentication status
-        // If authenticated, initialize main content
-        initializeMainAppContent();
-    } else {
-        // If not authenticated, show login form
+    if (!checkAuth()) { // If NOT authenticated
+        // Show login form
         loginContainer.style.setProperty('display', 'flex', 'important');
         mainContent.style.setProperty('display', 'none', 'important');
+        console.log('Not authenticated. Login form displayed. Main app content NOT initialized.');
+        return; // IMPORTANT: Stop execution here if not authenticated
     }
+
+    // If authenticated, initialize main content
+    console.log('Authenticated. Initializing main app content.');
+    initializeMainAppContent();
 }
 
 // --- Start Application ---
