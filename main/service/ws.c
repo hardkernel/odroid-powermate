@@ -13,6 +13,7 @@
 #include "pb.h"
 #include "pb_encode.h"
 #include "status.pb.h"
+#include "string.h" // Added for strlen and strncmp
 #include "webserver.h"
 
 #define UART_NUM UART_NUM_1
@@ -264,7 +265,6 @@ static esp_err_t ws_handler(httpd_req_t* req)
     httpd_ws_frame_t ws_pkt = {0};
     uint8_t buf[BUF_SIZE];
     ws_pkt.payload = buf;
-    ws_pkt.type = HTTPD_WS_TYPE_BINARY;
 
     esp_err_t ret = httpd_ws_recv_frame(req, &ws_pkt, BUF_SIZE);
     if (ret != ESP_OK)
@@ -273,7 +273,33 @@ static esp_err_t ws_handler(httpd_req_t* req)
         return ret;
     }
 
-    uart_write_bytes(UART_NUM, (const char*)ws_pkt.payload, ws_pkt.len);
+    if (ws_pkt.type == HTTPD_WS_TYPE_TEXT && ws_pkt.len == strlen("ping") &&
+        strncmp((const char*)ws_pkt.payload, "ping", ws_pkt.len) == 0)
+    {
+        ESP_LOGD(TAG, "Received application-level ping from client, sending pong.");
+        httpd_ws_frame_t pong_pkt = {
+            .payload = (uint8_t*)"pong", .len = strlen("pong"), .type = HTTPD_WS_TYPE_TEXT, .final = true};
+        return httpd_ws_send_frame(req, &pong_pkt);
+    }
+    else if (ws_pkt.type == HTTPD_WS_TYPE_CLOSE)
+    {
+        ESP_LOGI(TAG, "Client sent close frame, closing connection.");
+        return ESP_OK;
+    }
+    else if (ws_pkt.type == HTTPD_WS_TYPE_PING)
+    {
+        ESP_LOGD(TAG, "Received WebSocket PING control frame (handled by httpd).");
+        return ESP_OK;
+    }
+    else if (ws_pkt.type == HTTPD_WS_TYPE_PONG)
+    {
+        ESP_LOGD(TAG, "Received WebSocket PONG control frame.");
+        return ESP_OK;
+    }
+    else
+    {
+        uart_write_bytes(UART_NUM, (const char*)ws_pkt.payload, ws_pkt.len);
+    }
 
     return ESP_OK;
 }
