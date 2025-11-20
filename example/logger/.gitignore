@@ -1,0 +1,5 @@
+/.venv/
+/venv/
+status_pb2.py
+test.csv
+plot.png
