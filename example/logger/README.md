@@ -35,7 +35,7 @@ python3 logger.py -u admin -p password -o test.csv 192.168.30.5
 #### Plot data
 
 ```shell
-python3 csv_2_plot.py test.csv plot.png
+python3 csv_2_plot.py test.csv plot.png [--type power voltage current]
 ```
 
 ![plot.png](plot.png)
