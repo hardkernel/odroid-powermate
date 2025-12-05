@@ -81,6 +81,14 @@ void wifi_scan_aps(wifi_ap_record_t** ap_records, uint16_t* count)
     *count = 0;
     *ap_records = NULL;
 
+    wifi_set_auto_reconnect(false);
+
+    wifi_ap_record_t ap_info;
+    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK)
+    {
+        esp_wifi_disconnect();
+    }
+
     // Start scan, this is a blocking call
     if (esp_wifi_scan_start(NULL, true) == ESP_OK)
     {
@@ -98,6 +106,16 @@ void wifi_scan_aps(wifi_ap_record_t** ap_records, uint16_t* count)
                 ESP_LOGE(TAG, "Failed to allocate memory for AP records");
                 *count = 0;
             }
+        }
+    }
+
+    wifi_set_auto_reconnect(true);
+
+    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK)
+    {
+        if (!nconfig_value_is_not_set(WIFI_SSID))
+        {
+            wifi_connect();
         }
     }
 }
