@@ -16,8 +16,12 @@
 #include "wifi.h"
 
 #include "indicator.h"
+static bool s_auto_reconnect = true;
 
 static const char* TAG = "WIFI";
+
+void wifi_set_auto_reconnect(bool enable) { s_auto_reconnect = enable; }
+
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
 {
@@ -46,10 +50,18 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
     }
     else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED)
     {
-        led_set(LED_RED, BLINK_TRIPLE);
+        led_set(LED_BLU, BLINK_TRIPLE);
         wifi_event_sta_disconnected_t* event = (wifi_event_sta_disconnected_t*)event_data;
         ESP_LOGW(TAG, "Disconnected from AP, reason: %s", wifi_reason_str(event->reason));
-        // ESP-IDF will automatically try to reconnect by default.
+
+        if (event->reason != WIFI_REASON_ASSOC_LEAVE)
+        {
+            if (s_auto_reconnect && !nconfig_value_is_not_set(WIFI_SSID))
+            {
+                ESP_LOGI(TAG, "Connection lost, attempting to reconnect...");
+                esp_wifi_connect();
+            }
+        }
     }
     else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
     {

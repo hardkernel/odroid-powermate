@@ -78,3 +78,12 @@ sudo apt install nodejs npm nanopb
 2.  Check the serial monitor logs to find the IP address assigned to the device in STA mode, or the default AP address (usually `192.168.4.1`).
 3.  Open a web browser and navigate to the device's IP address.
 4.  You should now see the ODROID Remote control panel.
+
+## Docs
+
+- Hardkernel WiKi: [https://wiki.odroid.com/accessory/powermate](https://wiki.odroid.com/accessory/powermate)
+
+## Repo
+
+- Hardkernel Github: [https://github.com/hardkernel/odroid-powermate](https://github.com/hardkernel/odroid-powermate)
+- Original Repo: [https://github.com/shinys000114/odroid-powermate](https://github.com/shinys000114/odroid-powermate)
