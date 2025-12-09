@@ -30,6 +30,8 @@ import {setupEventListeners} from './events.js';
 
 // --- Globals ---
 // StatusMessage is imported directly from the generated proto.js file.
+let isRecording = false;
+let recordedData = [];
 
 // --- DOM Elements ---
 const loginContainer = document.getElementById('login-container');
@@ -49,6 +51,11 @@ const userSettingsForm = document.getElementById('user-settings-form');
 const newUsernameInput = document.getElementById('new-username');
 const newPasswordInput = document.getElementById('new-password');
 const confirmPasswordInput = document.getElementById('confirm-password');
+
+// Metrics Tab DOM Elements
+const recordButton = document.getElementById('record-button');
+const stopButton = document.getElementById('stop-button');
+const downloadCsvButton = document.getElementById('download-csv-button');
 
 
 // --- WebSocket Event Handlers ---
@@ -88,9 +95,14 @@ function onWsMessage(event) {
                         USB: sensorData.usb,
                         MAIN: sensorData.main,
                         VIN: sensorData.vin,
-                        timestamp: sensorData.timestampMs
+                        timestamp: sensorData.timestampMs,
+                        uptime: sensorData.uptimeMs
                     };
                     updateSensorUI(sensorPayload);
+
+                    if (isRecording) {
+                        recordedData.push(sensorPayload);
+                    }
 
                     // Update uptime separately from the sensor data payload
                     if (sensorData.uptimeMs !== undefined) {
@@ -233,6 +245,63 @@ function setupThemeToggles() {
     });
 }
 
+// --- Recording and Downloading Functions ---
+
+function startRecording() {
+    isRecording = true;
+    recordedData = [];
+    recordButton.style.display = 'none';
+    stopButton.style.display = 'inline-block';
+    downloadCsvButton.style.display = 'none';
+    console.log('Recording started.');
+}
+
+function stopRecording() {
+    isRecording = false;
+    recordButton.style.display = 'inline-block';
+    stopButton.style.display = 'none';
+    if (recordedData.length > 0) {
+        downloadCsvButton.style.display = 'inline-block';
+    }
+    console.log('Recording stopped. Data points captured:', recordedData.length);
+}
+
+function downloadCSV() {
+    if (recordedData.length === 0) {
+        alert('No data to download.');
+        return;
+    }
+
+    const headers = [
+        'timestamp', 'uptime_ms',
+        'vin_voltage', 'vin_current', 'vin_power',
+        'main_voltage', 'main_current', 'main_power',
+        'usb_voltage', 'usb_current', 'usb_power'
+    ];
+    const csvRows = [headers.join(',')];
+
+    recordedData.forEach(data => {
+        const timestamp = new Date(data.timestamp).toISOString();
+        const row = [
+            timestamp,
+            data.uptime,
+            data.VIN.voltage, data.VIN.current, data.VIN.power,
+            data.MAIN.voltage, data.MAIN.current, data.MAIN.power,
+            data.USB.voltage, data.USB.current, data.USB.power
+        ];
+        csvRows.push(row.join(','));
+    });
+
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', 'powermate_log.csv');
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
 
 // --- Application Initialization ---
 
@@ -263,6 +332,12 @@ function initializeMainAppContent() {
     initializeVersion();
     setupEventListeners(); // Attach main app event listeners
     logoutButton.addEventListener('click', handleLogout); // Attach logout listener
+    
+    // Attach listeners for recording/downloading
+    recordButton.addEventListener('click', startRecording);
+    stopButton.addEventListener('click', stopRecording);
+    downloadCsvButton.addEventListener('click', downloadCSV);
+
     connect();
 
     // Attach user settings form listener
