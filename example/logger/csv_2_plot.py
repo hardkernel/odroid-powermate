@@ -2,6 +2,7 @@ import argparse
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
+from dateutil.tz import gettz
 
 
 def plot_power_data(csv_path, output_path, plot_types, sources):
@@ -18,9 +19,19 @@ def plot_power_data(csv_path, output_path, plot_types, sources):
     """
     try:
         # Read the CSV file into a pandas DataFrame
-        # The 'timestamp' column is parsed as dates
+        # The 'timestamp' column is parsed as dates. Pandas automatically recognizes
+        # the ISO format (with 'Z') as UTC.
         df = pd.read_csv(csv_path, parse_dates=['timestamp'])
         print(f"Successfully loaded {len(df)} records from '{csv_path}'")
+
+        # --- Timezone Conversion ---
+        # Get the system's local timezone
+        local_tz = gettz()
+        # The timestamp from CSV is already UTC-aware.
+        # Convert it to the system's local timezone for plotting.
+        df['timestamp'] = df['timestamp'].dt.tz_convert(local_tz)
+        print(f"Timestamp converted to local timezone: {local_tz}")
+
     except FileNotFoundError:
         print(f"Error: The file '{csv_path}' was not found.")
         return
@@ -88,10 +99,12 @@ def plot_power_data(csv_path, output_path, plot_types, sources):
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
 
     # --- Formatting the x-axis (Time) ---
+    local_tz = gettz()
     last_ax = axes[-1]
-    last_ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+    # Pass the timezone to the formatter
+    last_ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S', tz=local_tz))
     last_ax.xaxis.set_major_locator(plt.MaxNLocator(15))  # Limit the number of ticks
-    plt.xlabel('Time')
+    plt.xlabel(f'Time ({local_tz.tzname(df["timestamp"].iloc[-1])})') # Display timezone name
     plt.xticks(rotation=45)
 
     # Add a main title to the figure
