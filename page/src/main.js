@@ -285,9 +285,9 @@ function downloadCSV() {
         const row = [
             timestamp,
             data.uptime,
-            data.VIN.voltage, data.VIN.current, data.VIN.power,
-            data.MAIN.voltage, data.MAIN.current, data.MAIN.power,
-            data.USB.voltage, data.USB.current, data.USB.power
+            Number(data.VIN.voltage).toFixed(3), Number(data.VIN.current).toFixed(3), Number(data.VIN.power).toFixed(3),
+            Number(data.MAIN.voltage).toFixed(3), Number(data.MAIN.current).toFixed(3), Number(data.MAIN.power).toFixed(3),
+            Number(data.USB.voltage).toFixed(3), Number(data.USB.current).toFixed(3), Number(data.USB.power).toFixed(3)
         ];
         csvRows.push(row.join(','));
     });
@@ -295,8 +295,15 @@ function downloadCSV() {
     const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
+    
+    const now = new Date();
+    const pad = (num) => num.toString().padStart(2, '0');
+    const datePart = `${now.getFullYear().toString().slice(-2)}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const timePart = `${pad(now.getHours())}-${pad(now.getMinutes())}`;
+    const filename = `powermate_${datePart}_${timePart}.csv`;
+
     link.setAttribute('href', url);
-    link.setAttribute('download', 'powermate_log.csv');
+    link.setAttribute('download', filename);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
