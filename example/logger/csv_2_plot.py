@@ -121,9 +121,9 @@ def plot_power_data(csv_path, output_path, plot_types, sources):
         for y_val in range(int(y_min), int(y_max) + 1):
             if y_val == 0: continue
             if y_val % 10 == 0:
-                ax.axhline(y=y_val, color='green', linestyle='-', linewidth=1.0, zorder=1)
+                ax.axhline(y=y_val, color='maroon', linestyle='--', linewidth=1.2, zorder=1)
             elif y_val % 5 == 0:
-                ax.axhline(y=y_val, color='red', linestyle='-', linewidth=1.0, zorder=1)
+                ax.axhline(y=y_val, color='midnightblue', linestyle='--', linewidth=1.2, zorder=1)
 
         # Keep the x-axis grid
         ax.xaxis.grid(True, which='major', linestyle='--', linewidth=0.8)
