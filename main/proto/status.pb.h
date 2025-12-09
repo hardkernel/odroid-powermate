@@ -25,8 +25,8 @@ typedef struct _SensorData {
     SensorChannelData main;
     bool has_vin;
     SensorChannelData vin;
-    uint32_t timestamp;
-    uint32_t uptime_sec;
+    uint64_t timestamp_ms;
+    uint64_t uptime_ms;
 } SensorData;
 
 /* Contains WiFi connection status */
@@ -85,8 +85,8 @@ extern "C" {
 #define SensorData_usb_tag                       1
 #define SensorData_main_tag                      2
 #define SensorData_vin_tag                       3
-#define SensorData_timestamp_tag                 4
-#define SensorData_uptime_sec_tag                5
+#define SensorData_timestamp_ms_tag              4
+#define SensorData_uptime_ms_tag                 5
 #define WifiStatus_connected_tag                 1
 #define WifiStatus_ssid_tag                      2
 #define WifiStatus_rssi_tag                      3
@@ -111,8 +111,8 @@ X(a, STATIC,   SINGULAR, FLOAT,    power,             3)
 X(a, STATIC,   OPTIONAL, MESSAGE,  usb,               1) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  main,              2) \
 X(a, STATIC,   OPTIONAL, MESSAGE,  vin,               3) \
-X(a, STATIC,   SINGULAR, UINT32,   timestamp,         4) \
-X(a, STATIC,   SINGULAR, UINT32,   uptime_sec,        5)
+X(a, STATIC,   SINGULAR, UINT64,   timestamp_ms,      4) \
+X(a, STATIC,   SINGULAR, UINT64,   uptime_ms,         5)
 #define SensorData_CALLBACK NULL
 #define SensorData_DEFAULT NULL
 #define SensorData_usb_MSGTYPE SensorChannelData
@@ -172,7 +172,7 @@ extern const pb_msgdesc_t StatusMessage_msg;
 #define LoadSwStatus_size                        4
 #define STATUS_PB_H_MAX_SIZE                     SensorData_size
 #define SensorChannelData_size                   15
-#define SensorData_size                          63
+#define SensorData_size                          73
 
 #ifdef __cplusplus
 } /* extern "C" */

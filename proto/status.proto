@@ -12,8 +12,8 @@ message SensorData {
   SensorChannelData usb = 1;
   SensorChannelData main = 2;
   SensorChannelData vin = 3;
-  uint32 timestamp = 4;
-  uint32 uptime_sec = 5;
+  uint64 timestamp_ms = 4;
+  uint64 uptime_ms = 5;
 }
 
 // Contains WiFi connection status

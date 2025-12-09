@@ -4,6 +4,7 @@
 
 #include "monitor.h"
 #include <nconfig.h>
+#include <sys/time.h>
 #include <time.h>
 #include "climit.h"
 #include "esp_log.h"
@@ -89,9 +90,10 @@ static void send_pb_message(const pb_msgdesc_t* fields, const void* src_struct)
 
 static void sensor_timer_callback(void* arg)
 {
-    int64_t uptime_us = esp_timer_get_time();
-    uint32_t uptime_sec = (uint32_t)(uptime_us / 1000000);
-    uint32_t timestamp = (uint32_t)time(NULL);
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    uint64_t timestamp_ms = (uint64_t)tv.tv_sec * 1000 + (uint64_t)tv.tv_usec / 1000;
+    uint64_t uptime_ms = (uint64_t)esp_timer_get_time() / 1000;
 
     StatusMessage message = StatusMessage_init_zero;
     message.which_payload = StatusMessage_sensor_data_tag;
@@ -120,8 +122,8 @@ static void sensor_timer_callback(void* arg)
 
     // datalog_add(timestamp, channel_data_log);
 
-    sensor_data->timestamp = timestamp;
-    sensor_data->uptime_sec = uptime_sec;
+    sensor_data->timestamp_ms = timestamp_ms;
+    sensor_data->uptime_ms = uptime_ms;
 
     send_pb_message(StatusMessage_fields, &message);
 }

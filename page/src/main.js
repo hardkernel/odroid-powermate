@@ -88,13 +88,13 @@ function onWsMessage(event) {
                         USB: sensorData.usb,
                         MAIN: sensorData.main,
                         VIN: sensorData.vin,
-                        timestamp: sensorData.timestamp
+                        timestamp: sensorData.timestampMs
                     };
                     updateSensorUI(sensorPayload);
 
                     // Update uptime separately from the sensor data payload
-                    if (sensorData.uptimeSec !== undefined) {
-                        updateUptimeUI(sensorData.uptimeSec);
+                    if (sensorData.uptimeMs !== undefined) {
+                        updateUptimeUI(sensorData.uptimeMs / 1000);
                     }
                 }
                 break;

@@ -70,7 +70,7 @@ class OdroidPowerLogger:
 
                     # Write header
                     header = [
-                        'timestamp', 'uptime_sec',
+                        'timestamp', 'uptime_ms',
                         'vin_voltage', 'vin_current', 'vin_power',
                         'main_voltage', 'main_current', 'main_power',
                         'usb_voltage', 'usb_current', 'usb_power'
@@ -97,10 +97,10 @@ class OdroidPowerLogger:
                     # Process only if the payload type is 'sensor_data'
                     if status_message.WhichOneof('payload') == 'sensor_data':
                         sensor_data = status_message.sensor_data
-                        ts_dt = datetime.fromtimestamp(sensor_data.timestamp)
+                        ts_dt = datetime.fromtimestamp(sensor_data.timestamp_ms / 1000)
                         ts_str = ts_dt.strftime('%Y-%m-%d %H:%M:%S')
 
-                        print(f"--- {ts_str} (Uptime: {sensor_data.uptime_sec}s) ---")
+                        print(f"--- {ts_str} (Uptime: {sensor_data.uptime_ms / 1000}s) ---")
 
                         # Print data for each channel
                         for name, channel in [('VIN', sensor_data.vin), ('MAIN', sensor_data.main),
@@ -111,7 +111,7 @@ class OdroidPowerLogger:
                         # Write to CSV if enabled
                         if csv_writer:
                             row = [
-                                ts_dt.isoformat(), sensor_data.uptime_sec,
+                                ts_dt.isoformat(), sensor_data.uptime_ms,
                                 sensor_data.vin.voltage, sensor_data.vin.current, sensor_data.vin.power,
                                 sensor_data.main.voltage, sensor_data.main.current, sensor_data.main.power,
                                 sensor_data.usb.voltage, sensor_data.usb.current, sensor_data.usb.power

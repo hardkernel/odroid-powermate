@@ -216,7 +216,7 @@ function updateSingleChart(chart, metric, data, timeLabel) {
  * @param {Object} data - The new sensor data object from the WebSocket.
  */
 export function updateCharts(data) {
-    const timeLabel = new Date(data.timestamp * 1000).toLocaleTimeString();
+    const timeLabel = new Date(data.timestamp).toLocaleTimeString();
 
     updateSingleChart(charts.power, 'power', data, timeLabel);
     updateSingleChart(charts.voltage, 'voltage', data, timeLabel);
