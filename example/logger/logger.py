@@ -68,7 +68,7 @@ class OdroidPowerLogger:
                     csv_file = open(self.output_file, 'w', newline='', encoding='utf-8')
                     csv_writer = csv.writer(csv_file)
 
-                    # Write header
+                    # Write header - matches main.js and csv_2_plot.py expectations
                     header = [
                         'timestamp', 'uptime_ms',
                         'vin_voltage', 'vin_current', 'vin_power',
@@ -97,24 +97,27 @@ class OdroidPowerLogger:
                     # Process only if the payload type is 'sensor_data'
                     if status_message.WhichOneof('payload') == 'sensor_data':
                         sensor_data = status_message.sensor_data
+                        
+                        # Format timestamp to ISO format with 'Z' for UTC, matching main.js
                         ts_dt = datetime.fromtimestamp(sensor_data.timestamp_ms / 1000)
-                        ts_str = ts_dt.strftime('%Y-%m-%d %H:%M:%S')
+                        ts_iso = ts_dt.isoformat(timespec='milliseconds') + 'Z'
 
-                        print(f"--- {ts_str} (Uptime: {sensor_data.uptime_ms / 1000}s) ---")
-
-                        # Print data for each channel
+                        # Print data for console output (can be adjusted if needed)
+                        print(f"--- {ts_iso} (Uptime: {sensor_data.uptime_ms / 1000:.3f}s) ---")
                         for name, channel in [('VIN', sensor_data.vin), ('MAIN', sensor_data.main),
                                               ('USB', sensor_data.usb)]:
                             print(
-                                f"  {name:<4}: {channel.voltage:5.2f} V | {channel.current:5.3f} A | {channel.power:5.2f} W")
+                                f"  {name:<4}: {channel.voltage:.3f} V | {channel.current:.3f} A | {channel.power:.3f} W")
 
                         # Write to CSV if enabled
                         if csv_writer:
+                            # Format numerical values to 3 decimal places, matching main.js
                             row = [
-                                ts_dt.isoformat(), sensor_data.uptime_ms,
-                                sensor_data.vin.voltage, sensor_data.vin.current, sensor_data.vin.power,
-                                sensor_data.main.voltage, sensor_data.main.current, sensor_data.main.power,
-                                sensor_data.usb.voltage, sensor_data.usb.current, sensor_data.usb.power
+                                ts_iso,
+                                sensor_data.uptime_ms,
+                                f"{sensor_data.vin.voltage:.3f}", f"{sensor_data.vin.current:.3f}", f"{sensor_data.vin.power:.3f}",
+                                f"{sensor_data.main.voltage:.3f}", f"{sensor_data.main.current:.3f}", f"{sensor_data.main.power:.3f}",
+                                f"{sensor_data.usb.voltage:.3f}", f"{sensor_data.usb.current:.3f}", f"{sensor_data.usb.power:.3f}"
                             ]
                             csv_writer.writerow(row)
 
