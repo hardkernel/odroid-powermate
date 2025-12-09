@@ -44,6 +44,7 @@ enum nconfig_type
     USB_CURRENT_LIMIT, ///< The maximum current limit for the USB out.
     PAGE_USERNAME, ///< Webpage username
     PAGE_PASSWORD, ///< Webpage password
+    SENSOR_PERIOD_MS, ///< Sensor period
     NCONFIG_TYPE_MAX,   ///< Sentinel for the maximum number of configuration types.
 };
 

@@ -20,5 +20,6 @@ typedef struct
 } sensor_data_t;
 
 void init_status_monitor();
+esp_err_t update_sensor_period(int period);
 
 #endif // ODROID_REMOTE_HTTP_MONITOR_H

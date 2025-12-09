@@ -77,8 +77,9 @@ export function setupEventListeners() {
     dom.networkApplyButton.addEventListener('click', ui.applyNetworkSettings);
     dom.apModeApplyButton.addEventListener('click', ui.applyApModeSettings);
     dom.baudRateApplyButton.addEventListener('click', ui.applyBaudRateSettings);
+    dom.periodApplyButton.addEventListener('click', ui.applyPeriodSettings);
 
-    // --- Device Settings (Reboot) ---
+    // --- Device Settings (Reboot & Period Slider) ---
     if (dom.rebootButton) {
         dom.rebootButton.addEventListener('click', () => {
             if (confirm('Are you sure you want to reboot the device?')) {
@@ -98,6 +99,12 @@ export function setupEventListeners() {
                         alert('Failed to send reboot command.');
                     });
             }
+        });
+    }
+
+    if (dom.periodSlider) {
+        dom.periodSlider.addEventListener('input', () => {
+            dom.periodValue.textContent = dom.periodSlider.value;
         });
     }
 

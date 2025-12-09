@@ -302,6 +302,24 @@ export async function applyBaudRateSettings() {
 }
 
 /**
+ * Applies the selected sensor period by sending it to the server.
+ */
+export async function applyPeriodSettings() {
+    const period = dom.periodSlider.value;
+    dom.periodApplyButton.disabled = true;
+    dom.periodApplyButton.innerHTML = `<span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Applying...`;
+
+    try {
+        await api.postPeriodSetting(period);
+    } catch (error) {
+        console.error('Error applying period:', error);
+    } finally {
+        dom.periodApplyButton.disabled = false;
+        dom.periodApplyButton.innerHTML = 'Apply';
+    }
+}
+
+/**
  * Fetches and displays the current network and device settings in the settings modal.
  */
 export async function initializeSettings() {
@@ -337,6 +355,10 @@ export async function initializeSettings() {
         // Device Settings
         if (data.baudrate) {
             dom.baudRateSelect.value = data.baudrate;
+        }
+        if (data.period) {
+            dom.periodSlider.value = data.period;
+            dom.periodValue.textContent = data.period;
         }
 
     } catch (error) {

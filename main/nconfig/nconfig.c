@@ -30,6 +30,7 @@ const static char* keys[NCONFIG_TYPE_MAX] = {
     [USB_CURRENT_LIMIT] = "usb_climit",
     [PAGE_USERNAME] = "username",
     [PAGE_PASSWORD] = "password",
+    [SENSOR_PERIOD_MS] = "sensor_period",
 };
 
 struct default_value
@@ -54,6 +55,7 @@ struct default_value const default_values[] = {
     {USB_CURRENT_LIMIT, "3.0"},
     {PAGE_USERNAME, "admin"},
     {PAGE_PASSWORD, "password"},
+    {SENSOR_PERIOD_MS, "1000"},
 };
 
 esp_err_t init_nconfig()

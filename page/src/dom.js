@@ -76,6 +76,9 @@ export const apPasswordInput = document.getElementById('ap-password');
 // --- Device Settings Elements ---
 export const baudRateSelect = document.getElementById('baud-rate-select');
 export const baudRateApplyButton = document.getElementById('baud-rate-apply-button');
+export const periodSlider = document.getElementById('period-slider');
+export const periodValue = document.getElementById('period-value');
+export const periodApplyButton = document.getElementById('period-apply-button');
 export const rebootButton = document.getElementById('reboot-button');
 
 // --- Current Limit Settings Elements ---

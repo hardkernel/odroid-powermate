@@ -104,7 +104,6 @@ export async function postNetworkSettings(payload) {
  * Posts the selected UART baud rate to the server.
  * @param {string} baudrate The selected baud rate.
  * @returns {Promise<Response>} A promise that resolves to the raw fetch response.
- * @throws {Error} Throws an error if the request fails.
  */
 export async function postBaudRateSetting(baudrate) {
     const response = await fetch('/api/setting', {
@@ -113,7 +112,24 @@ export async function postBaudRateSetting(baudrate) {
             'Content-Type': 'application/json',
             ...getAuthHeaders(),
         },
-        body: JSON.stringify({baudrate}),
+        body: JSON.stringify({ baudrate }),
+    });
+    return await handleResponse(response);
+}
+
+/**
+ * Posts the selected sensor period to the server.
+ * @param {string} period The selected period in milliseconds.
+ * @returns {Promise<Response>} A promise that resolves to the raw fetch response.
+ */
+export async function postPeriodSetting(period) {
+    const response = await fetch('/api/setting', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders(),
+        },
+        body: JSON.stringify({ period }),
     });
     return await handleResponse(response);
 }

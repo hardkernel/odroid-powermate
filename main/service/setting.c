@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+#include "monitor.h"
 #include "nconfig.h"
 #include "webserver.h"
 #include "wifi.h"
@@ -45,6 +46,11 @@ static esp_err_t setting_get_handler(httpd_req_t* req)
     if (nconfig_read(UART_BAUD_RATE, buf, sizeof(buf)) == ESP_OK)
     {
         cJSON_AddStringToObject(root, "baudrate", buf);
+    }
+
+    if (nconfig_read(SENSOR_PERIOD_MS, buf, sizeof(buf)) == ESP_OK)
+    {
+        cJSON_AddStringToObject(root, "period", buf);
     }
 
     // Add current limits to the response
@@ -174,6 +180,7 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
     cJSON* net_type_item = cJSON_GetObjectItem(root, "net_type");
     cJSON* ssid_item = cJSON_GetObjectItem(root, "ssid");
     cJSON* baud_item = cJSON_GetObjectItem(root, "baudrate");
+    cJSON* period_item = cJSON_GetObjectItem(root, "period");
     cJSON* vin_climit_item = cJSON_GetObjectItem(root, "vin_current_limit");
     cJSON* main_climit_item = cJSON_GetObjectItem(root, "main_current_limit");
     cJSON* usb_climit_item = cJSON_GetObjectItem(root, "usb_current_limit");
@@ -288,6 +295,13 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
         nconfig_write(UART_BAUD_RATE, baudrate);
         change_baud_rate(strtol(baudrate, NULL, 10));
         httpd_resp_sendstr(req, "{\"status\":\"baudrate_updated\"}");
+    }
+    else if (period_item && cJSON_IsString(period_item))
+    {
+        const char* period_str = period_item->valuestring;
+        ESP_LOGI(TAG, "Received period set request: %s", period_str);
+        update_sensor_period(strtol(period_str, NULL, 10));
+        httpd_resp_sendstr(req, "{\"status\":\"period_updated\"}");
     }
     else if (vin_climit_item || main_climit_item || usb_climit_item)
     {

@@ -289,6 +289,25 @@ void init_status_monitor()
     xTaskCreate(shutdown_load_sw_task, "shutdown_sw_task", configMINIMAL_STACK_SIZE * 3, NULL, 15,
                 &shutdown_task_handle);
 
-    ESP_ERROR_CHECK(esp_timer_start_periodic(sensor_timer, 1000000));
+    nconfig_read(SENSOR_PERIOD_MS, buf, sizeof(buf));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(sensor_timer, strtol(buf, NULL, 10) * 1000));
     ESP_ERROR_CHECK(esp_timer_start_periodic(wifi_status_timer, 1000000 * 5));
+}
+
+esp_err_t update_sensor_period(int period)
+{
+    if (period < 500 || period > 10000) // 0.5 sec ~ 10 sec
+    {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char buf[10];
+    sprintf(buf, "%d", period);
+    esp_err_t err = nconfig_write(SENSOR_PERIOD_MS, buf);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    esp_timer_stop(sensor_timer);
+    return esp_timer_start_periodic(sensor_timer, period * 1000);
 }
