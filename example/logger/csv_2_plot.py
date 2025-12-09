@@ -110,7 +110,7 @@ def plot_power_data(csv_path, output_path, plot_types, sources):
     # Add a main title to the figure
     start_time = df['timestamp'].iloc[0].strftime('%Y-%m-%d %H:%M:%S')
     end_time = df['timestamp'].iloc[-1].strftime('%H:%M:%S')
-    fig.suptitle(f'ODROID Power Log ({start_time} to {end_time})', fontsize=16, y=0.95)
+    fig.suptitle(f'PowerMate Log ({start_time} to {end_time})', fontsize=16, y=0.95)
 
     # Adjust layout to prevent titles/labels from overlapping
     plt.tight_layout(rect=[0, 0, 1, 0.94])
