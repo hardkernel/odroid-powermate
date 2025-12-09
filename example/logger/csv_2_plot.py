@@ -1,11 +1,10 @@
 import argparse
-
 import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
 
 
-def plot_power_data(csv_path, output_path, plot_types):
+def plot_power_data(csv_path, output_path, plot_types, sources):
     """
     Reads power data from a CSV file and generates a plot image.
 
@@ -14,6 +13,8 @@ def plot_power_data(csv_path, output_path, plot_types):
         output_path (str): The path to save the output plot image.
         plot_types (list): A list of strings indicating which plots to generate
                            (e.g., ['power', 'voltage', 'current']).
+        sources (list): A list of strings indicating which power sources to plot
+                        (e.g., ['vin', 'main', 'usb']).
     """
     try:
         # Read the CSV file into a pandas DataFrame
@@ -28,15 +29,25 @@ def plot_power_data(csv_path, output_path, plot_types):
         return
 
     # --- Plotting Configuration ---
+    # Y-axis scale settings from chart.js
+    scale_config = {
+        'power': {'steps': [5, 20, 50, 160]},
+        'voltage': {'steps': [5, 10, 15, 25]},
+        'current': {'steps': [1, 2.5, 5, 10]}
+    }
+
     plot_configs = {
         'power': {'title': 'Power Consumption', 'ylabel': 'Power (W)',
-                  'cols': ['vin_power', 'main_power', 'usb_power']},
+                  'cols': [f'{s}_power' for s in sources]},
         'voltage': {'title': 'Voltage', 'ylabel': 'Voltage (V)',
-                    'cols': ['vin_voltage', 'main_voltage', 'usb_voltage']},
-        'current': {'title': 'Current', 'ylabel': 'Current (A)', 'cols': ['vin_current', 'main_current', 'usb_current']}
+                    'cols': [f'{s}_voltage' for s in sources]},
+        'current': {'title': 'Current', 'ylabel': 'Current (A)',
+                    'cols': [f'{s}_current' for s in sources]}
     }
-    channel_labels = ['VIN', 'MAIN', 'USB']
-    channel_colors = ['red', 'green', 'blue']
+    channel_labels = [s.upper() for s in sources]
+    # Define a color map for all possible sources
+    color_map = {'vin': 'red', 'main': 'green', 'usb': 'blue'}
+    channel_colors = [color_map[s] for s in sources]
 
     num_plots = len(plot_types)
     if num_plots == 0:
@@ -44,8 +55,6 @@ def plot_power_data(csv_path, output_path, plot_types):
         return
 
     # Create a figure and a set of subplots based on the number of selected plot types.
-    # sharex=True makes all subplots share the same x-axis (time)
-    # squeeze=False ensures that 'axes' is always a 2D array, even if num_plots is 1.
     fig, axes = plt.subplots(num_plots, 1, figsize=(15, 6 * num_plots), sharex=True, squeeze=False)
     axes = axes.flatten()  # Flatten the 2D array to 1D for easier iteration
 
@@ -54,8 +63,24 @@ def plot_power_data(csv_path, output_path, plot_types):
         ax = axes[i]
         config = plot_configs[plot_type]
 
+        max_data_value = 0
         for j, col_name in enumerate(config['cols']):
-            ax.plot(df['timestamp'], df[col_name], label=channel_labels[j], color=channel_colors[j])
+            if col_name in df.columns:
+                ax.plot(df['timestamp'], df[col_name], label=channel_labels[j], color=channel_colors[j])
+                # Find the maximum value in the current column to set the y-axis limit
+                max_col_value = df[col_name].max()
+                if max_col_value > max_data_value:
+                    max_data_value = max_col_value
+            else:
+                print(f"Warning: Column '{col_name}' not found in CSV. Skipping.")
+
+        # --- Dynamic Y-axis Scaling ---
+        ax.set_ylim(bottom=0) # Set y-axis minimum to 0
+        if plot_type in scale_config:
+            steps = scale_config[plot_type]['steps']
+            # Find the smallest step that is >= max_data_value
+            new_max = next((step for step in steps if step >= max_data_value), steps[-1])
+            ax.set_ylim(top=new_max)
 
         ax.set_title(config['title'])
         ax.set_ylabel(config['ylabel'])
@@ -63,8 +88,6 @@ def plot_power_data(csv_path, output_path, plot_types):
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
 
     # --- Formatting the x-axis (Time) ---
-    # Improve date formatting on the x-axis
-    # Apply formatting to the last subplot's x-axis
     last_ax = axes[-1]
     last_ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
     last_ax.xaxis.set_major_locator(plt.MaxNLocator(15))  # Limit the number of ticks
@@ -99,9 +122,17 @@ def main():
         help="Types of plots to generate. Choose from 'power', 'voltage', 'current'. "
              "Default is to generate all three."
     )
+    parser.add_argument(
+        "-s", "--source",
+        nargs='+',
+        choices=['vin', 'main', 'usb'],
+        default=['vin', 'main', 'usb'],
+        help="Power sources to plot. Choose from 'vin', 'main', 'usb'. "
+             "Default is to plot all three."
+    )
     args = parser.parse_args()
 
-    plot_power_data(args.input_csv, args.output_image, args.type)
+    plot_power_data(args.input_csv, args.output_image, args.type, args.source)
 
 
 if __name__ == "__main__":
