@@ -42,7 +42,7 @@ Ensure you have Python 3 installed.
 With the virtual environment activated, install the necessary Python packages:
 
 ```bash
-pip3 install requests websockets protobuf pandas matplotlib python-dateutil
+pip3 install requests websockets protobuf pandas matplotlib python-dateutil scipy
 ```
 
 ### 4. Protobuf Generated File
