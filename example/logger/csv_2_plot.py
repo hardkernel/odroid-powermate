@@ -6,7 +6,8 @@ from dateutil.tz import gettz
 from matplotlib.ticker import MultipleLocator
 
 
-def plot_power_data(csv_path, output_path, plot_types, sources):
+def plot_power_data(csv_path, output_path, plot_types, sources,
+                    voltage_y_max=None, current_y_max=None, power_y_max=None):
     """
     Reads power data from a CSV file and generates a plot image.
 
@@ -17,6 +18,9 @@ def plot_power_data(csv_path, output_path, plot_types, sources):
                            (e.g., ['power', 'voltage', 'current']).
         sources (list): A list of strings indicating which power sources to plot
                         (e.g., ['vin', 'main', 'usb']).
+        voltage_y_max (float, optional): Maximum value for the voltage plot's Y-axis.
+        current_y_max (float, optional): Maximum value for the current plot's Y-axis.
+        power_y_max (float, optional): Maximum value for the power plot's Y-axis.
     """
     try:
         # Read the CSV file into a pandas DataFrame
@@ -59,6 +63,11 @@ def plot_power_data(csv_path, output_path, plot_types, sources):
         'voltage': {'title': 'Voltage', 'ylabel': 'Voltage (V)', 'cols': [f'{s}_voltage' for s in sources]},
         'current': {'title': 'Current', 'ylabel': 'Current (A)', 'cols': [f'{s}_current' for s in sources]}
     }
+    y_max_options = {
+        'power': power_y_max,
+        'voltage': voltage_y_max,
+        'current': current_y_max
+    }
 
     channel_labels = [s.upper() for s in sources]
     color_map = {'vin': 'red', 'main': 'green', 'usb': 'blue'}
@@ -88,7 +97,11 @@ def plot_power_data(csv_path, output_path, plot_types, sources):
 
         # --- Dynamic Y-axis Scaling ---
         ax.set_ylim(bottom=0)
-        if plot_type in scale_config:
+        # Set y-axis max from options if provided
+        y_max_option = y_max_options.get(plot_type)
+        if y_max_option is not None:
+            ax.set_ylim(top=y_max_option)
+        elif plot_type in scale_config:
             steps = scale_config[plot_type]['steps']
             new_max = next((step for step in steps if step >= max_data_value), steps[-1])
             ax.set_ylim(top=new_max)
@@ -192,9 +205,21 @@ def main():
         help="Power sources to plot. Choose from 'vin', 'main', 'usb'. "
              "Default is to plot all three."
     )
+    parser.add_argument("--voltage_y_max", type=float, help="Maximum value for the voltage plot's Y-axis.")
+    parser.add_argument("--current_y_max", type=float, help="Maximum value for the current plot's Y-axis.")
+    parser.add_argument("--power_y_max", type=float, help="Maximum value for the power plot's Y-axis.")
+
     args = parser.parse_args()
 
-    plot_power_data(args.input_csv, args.output_image, args.type, args.source)
+    plot_power_data(
+        args.input_csv,
+        args.output_image,
+        args.type,
+        args.source,
+        voltage_y_max=args.voltage_y_max,
+        current_y_max=args.current_y_max,
+        power_y_max=args.power_y_max
+    )
 
 
 if __name__ == "__main__":
