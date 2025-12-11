@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from dateutil.tz import gettz
 from matplotlib.ticker import MultipleLocator, FuncFormatter
+import math
 
 
 def plot_power_data(csv_path, output_path, plot_types, sources,
@@ -127,10 +128,27 @@ def plot_power_data(csv_path, output_path, plot_types, sources,
 
         # --- Y-Grid and Tick Configuration ---
         y_min, y_max = ax.get_ylim()
-        if plot_type == 'current' and y_max <= 2.5: major_interval = 0.5
-        elif y_max <= 10: major_interval = 2
-        elif y_max <= 25: major_interval = 5
-        else: major_interval = y_max / 5.0
+        
+        if y_max <= 0:
+            major_interval = 1.0 # Default for very small or zero range
+        elif plot_type == 'current' and y_max <= 2.5:
+            major_interval = 0.5 # Maintain current behavior for very small current values
+        elif y_max <= 10:
+            major_interval = 2.0 # Maintain current behavior for small ranges where 5-unit is too coarse
+        elif y_max <= 25:
+            major_interval = 5.0 # Already a multiple of 5
+        else: # y_max > 25
+            # Aim for major ticks that are multiples of 5.
+            # Calculate a rough interval to get around 5 major ticks.
+            rough_interval = y_max / 5.0
+            
+            # Find the smallest multiple of 5 that is greater than or equal to rough_interval.
+            # This ensures labels are multiples of 5.
+            major_interval = math.ceil(rough_interval / 5.0) * 5.0
+            
+            # Ensure major_interval is not 0 if y_max is small but positive.
+            if major_interval == 0 and y_max > 0:
+                major_interval = 5.0
 
         ax.yaxis.set_major_locator(MultipleLocator(major_interval))
         ax.yaxis.set_minor_locator(MultipleLocator(1))
