@@ -3,11 +3,12 @@ import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
 import pandas as pd
 from dateutil.tz import gettz
-from matplotlib.ticker import MultipleLocator
+from matplotlib.ticker import MultipleLocator, FuncFormatter
 
 
 def plot_power_data(csv_path, output_path, plot_types, sources,
-                    voltage_y_max=None, current_y_max=None, power_y_max=None):
+                    voltage_y_max=None, current_y_max=None, power_y_max=None,
+                    relative_time=False):
     """
     Reads power data from a CSV file and generates a plot image.
 
@@ -21,16 +22,29 @@ def plot_power_data(csv_path, output_path, plot_types, sources,
         voltage_y_max (float, optional): Maximum value for the voltage plot's Y-axis.
         current_y_max (float, optional): Maximum value for the current plot's Y-axis.
         power_y_max (float, optional): Maximum value for the power plot's Y-axis.
+        relative_time (bool): If True, the x-axis will show elapsed time from the start.
     """
     try:
         # Read the CSV file into a pandas DataFrame
         df = pd.read_csv(csv_path, parse_dates=['timestamp'])
         print(f"Successfully loaded {len(df)} records from '{csv_path}'")
 
-        # --- Timezone Conversion ---
-        local_tz = gettz()
-        df['timestamp'] = df['timestamp'].dt.tz_convert(local_tz)
-        print(f"Timestamp converted to local timezone: {local_tz}")
+        if df.empty:
+            print("CSV file is empty. Exiting.")
+            return
+
+        # --- Time Handling ---
+        x_axis_data = df['timestamp']
+        if relative_time:
+            start_time = df['timestamp'].iloc[0]
+            df['elapsed_seconds'] = (df['timestamp'] - start_time).dt.total_seconds()
+            x_axis_data = df['elapsed_seconds']
+            print("X-axis set to relative time (elapsed seconds).")
+        else:
+            # --- Timezone Conversion for absolute time ---
+            local_tz = gettz()
+            df['timestamp'] = df['timestamp'].dt.tz_convert(local_tz)
+            print(f"Timestamp converted to local timezone: {local_tz}")
 
     except FileNotFoundError:
         print(f"Error: The file '{csv_path}' was not found.")
@@ -88,7 +102,7 @@ def plot_power_data(csv_path, output_path, plot_types, sources,
         max_data_value = 0
         for j, col_name in enumerate(config['cols']):
             if col_name in df.columns:
-                ax.plot(df['timestamp'], df[col_name], label=channel_labels[j], color=channel_colors[j], zorder=2)
+                ax.plot(x_axis_data, df[col_name], label=channel_labels[j], color=channel_colors[j], zorder=2)
                 max_col_value = df[col_name].max()
                 if max_col_value > max_data_value:
                     max_data_value = max_col_value
@@ -97,7 +111,6 @@ def plot_power_data(csv_path, output_path, plot_types, sources,
 
         # --- Dynamic Y-axis Scaling ---
         ax.set_ylim(bottom=0)
-        # Set y-axis max from options if provided
         y_max_option = y_max_options.get(plot_type)
         if y_max_option is not None:
             ax.set_ylim(top=y_max_option)
@@ -112,25 +125,16 @@ def plot_power_data(csv_path, output_path, plot_types, sources,
 
         # --- Grid and Tick Configuration ---
         y_min, y_max = ax.get_ylim()
-
-        # Keep the dynamic major_interval logic for tick LABELS
-        if plot_type == 'current' and y_max <= 2.5:
-            major_interval = 0.5
-        elif y_max <= 10:
-            major_interval = 2
-        elif y_max <= 25:
-            major_interval = 5
-        else:
-            major_interval = y_max / 5.0
+        if plot_type == 'current' and y_max <= 2.5: major_interval = 0.5
+        elif y_max <= 10: major_interval = 2
+        elif y_max <= 25: major_interval = 5
+        else: major_interval = y_max / 5.0
 
         ax.yaxis.set_major_locator(MultipleLocator(major_interval))
         ax.yaxis.set_minor_locator(MultipleLocator(1))
-
-        # Disable the default major grid, but keep the minor one
         ax.yaxis.grid(False, which='major')
         ax.yaxis.grid(True, which='minor', linestyle='--', linewidth=0.6, zorder=0)
 
-        # Draw custom lines for 5 and 10 multiples, which are now the only major grid lines
         for y_val in range(int(y_min), int(y_max) + 1):
             if y_val == 0: continue
             if y_val % 10 == 0:
@@ -138,43 +142,49 @@ def plot_power_data(csv_path, output_path, plot_types, sources,
             elif y_val % 5 == 0:
                 ax.axhline(y=y_val, color='midnightblue', linestyle='--', linewidth=1.2, zorder=1)
 
-        # Keep the x-axis grid
         ax.xaxis.grid(True, which='major', linestyle='--', linewidth=0.8)
 
-    # --- Formatting the x-axis (Time) ---
-    local_tz = gettz()
+    # --- Formatting the x-axis ---
     last_ax = axes[-1]
-
     if not df.empty:
-        last_ax.set_xlim(df['timestamp'].iloc[0], df['timestamp'].iloc[-1])
+        last_ax.set_xlim(x_axis_data.iloc[0], x_axis_data.iloc[-1])
 
-    last_ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S', tz=local_tz))
-    last_ax.xaxis.set_major_locator(plt.MaxNLocator(15))
-    plt.xlabel(f'Time ({local_tz.tzname(df["timestamp"].iloc[-1])})')
+    if relative_time:
+        last_ax.xaxis.set_major_locator(plt.MaxNLocator(15))
+        # Optional: Format to M:S if needed
+        # formatter = FuncFormatter(lambda s, x: f'{int(s//60)}:{int(s%60):02d}')
+        # last_ax.xaxis.set_major_formatter(formatter)
+        plt.xlabel('Elapsed Time (seconds)')
+    else:
+        local_tz = gettz()
+        last_ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S', tz=local_tz))
+        last_ax.xaxis.set_major_locator(plt.MaxNLocator(15))
+        plt.xlabel(f'Time ({local_tz.tzname(df["timestamp"].iloc[-1])})')
+
     plt.xticks(rotation=45)
 
     # --- Add a main title and subtitle ---
-    start_time = df['timestamp'].iloc[0].strftime('%Y-%m-%d %H:%M:%S')
-    end_time = df['timestamp'].iloc[-1].strftime('%H:%M:%S')
-    main_title = f'PowerMate Log ({start_time} to {end_time})'
+    if relative_time:
+        main_title = 'PowerMate Log'
+    else:
+        start_time_str = df['timestamp'].iloc[0].strftime('%Y-%m-%d %H:%M:%S')
+        end_time_str = df['timestamp'].iloc[-1].strftime('%H:%M:%S')
+        main_title = f'PowerMate Log ({start_time_str} to {end_time_str})'
+
 
     subtitle_parts = []
     if avg_interval_ms > 0:
         subtitle_parts.append(f'Avg. Interval: {avg_interval_ms:.2f} ms')
-
     voltage_strings = [f'{source.upper()} Avg: {avg_v:.2f} V' for source, avg_v in avg_voltages.items()]
     if voltage_strings:
         subtitle_parts.extend(voltage_strings)
-
     subtitle = ' | '.join(subtitle_parts)
 
     full_title = main_title
     if subtitle:
         full_title += f'\n{subtitle}'
-
     fig.suptitle(full_title, fontsize=14)
 
-    # Adjust layout to make space for the subtitle
     plt.tight_layout(rect=[0, 0, 1, 0.98])
 
     # --- Save the plot to a file ---
@@ -208,6 +218,11 @@ def main():
     parser.add_argument("--voltage_y_max", type=float, help="Maximum value for the voltage plot's Y-axis.")
     parser.add_argument("--current_y_max", type=float, help="Maximum value for the current plot's Y-axis.")
     parser.add_argument("--power_y_max", type=float, help="Maximum value for the power plot's Y-axis.")
+    parser.add_argument(
+        "-r", "--relative-time",
+        action='store_true',
+        help="Display the x-axis as elapsed time from the start (in seconds) instead of absolute time."
+    )
 
     args = parser.parse_args()
 
@@ -218,7 +233,8 @@ def main():
         args.source,
         voltage_y_max=args.voltage_y_max,
         current_y_max=args.current_y_max,
-        power_y_max=args.power_y_max
+        power_y_max=args.power_y_max,
+        relative_time=args.relative_time
     )
 
 
