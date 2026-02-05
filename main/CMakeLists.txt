@@ -21,6 +21,8 @@ idf_component_register(SRC_DIRS "app" "nconfig" "wifi" "indicator" "service" "pr
         EMBED_FILES ${GZ_OUTPUT_FILE}
 )
 
+target_sources(${COMPONENT_LIB} PRIVATE ${PROTO_C_FILE})
+
 # Define a custom command to build the web app.
 # This command explicitly tells CMake that it produces the GZ_OUTPUT_FILE.
 add_custom_command(
