@@ -22,3 +22,4 @@ add_compile_definitions(VERSION_TAG="${GIT_TAG}")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(odroid-power-mate)
+include(cmake/gen_powermate_bin.cmake)
