@@ -121,6 +121,42 @@ export function updateVersionUI(version) {
 }
 
 /**
+ * Adds an event record to the Event Table.
+ * @param {number} level - The severity level of the event.
+ * @param {number} timestampMs - Timestamp of the event in milliseconds.
+ * @param {number} uptimeMs - Uptime of the device in milliseconds.
+ * @param {string} message - Event description.
+ */
+export function addEventToTable(level, timestampMs, uptimeMs, message) {
+    if (!dom.eventTableBody) return;
+
+    const row = document.createElement('tr');
+
+    const dateStr = timestampMs ? new Date(Number(timestampMs)).toLocaleString() : 'Unknown';
+    const uptimeStr = uptimeMs ? formatUptime(Number(uptimeMs) / 1000) : '00:00:00';
+
+    let iconClass = '';
+    let textClass = '';
+    let levelText = '';
+    switch (level) {
+        case 0: iconClass = 'bi-info-circle-fill text-info'; textClass = 'text-info'; levelText = 'Info'; break;
+        case 1: iconClass = 'bi-exclamation-triangle-fill text-warning'; textClass = 'text-warning'; levelText = 'Warn'; break;
+        case 2: iconClass = 'bi-x-circle-fill text-danger'; textClass = 'text-danger'; levelText = 'Crit'; break;
+        case 3: iconClass = 'bi-sign-stop-fill text-danger'; textClass = 'text-danger'; levelText = 'Fatal'; break;
+        default: iconClass = 'bi-question-circle-fill text-secondary'; textClass = 'text-secondary'; levelText = 'Unk';
+    }
+
+    row.innerHTML = `
+        <td class="small align-middle">${dateStr}</td>
+        <td class="small align-middle">${uptimeStr}</td>
+        <td class="align-middle"><i class="bi ${iconClass}" title="${levelText}"></i> <span class="d-none d-md-inline small ${textClass}">${levelText}</span></td>
+        <td class="small text-break align-middle">${message}</td>
+    `;
+
+    dom.eventTableBody.prepend(row);
+}
+
+/**
  * Initiates a Wi-Fi scan and updates the settings modal with the results.
  */
 export async function scanForWifi() {

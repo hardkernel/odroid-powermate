@@ -16,6 +16,7 @@ import * as api from './api.js';
 import {initWebSocket} from './websocket.js';
 import {setupTerminal, term} from './terminal.js';
 import {
+    addEventToTable,
     applyTheme,
     initUI,
     updateControlStatus,
@@ -32,6 +33,7 @@ import {setupEventListeners} from './events.js';
 // StatusMessage is imported directly from the generated proto.js file.
 let isRecording = false;
 let recordedData = [];
+let recordedEvents = [];
 
 // --- DOM Elements ---
 const loginContainer = document.getElementById('login-container');
@@ -56,6 +58,7 @@ const confirmPasswordInput = document.getElementById('confirm-password');
 const recordButton = document.getElementById('record-button');
 const stopButton = document.getElementById('stop-button');
 const downloadCsvButton = document.getElementById('download-csv-button');
+const downloadEventsCsvButton = document.getElementById('download-events-csv-button');
 
 
 // --- WebSocket Event Handlers ---
@@ -134,6 +137,9 @@ function onWsMessage(event) {
                     const msg = decodedMessage.eventData.message;
                     const timestampMs = decodedMessage.eventData.timestampMs;
                     const uptimeMs = decodedMessage.eventData.uptimeMs;
+
+                    recordedEvents.push({ level, timestampMs, uptimeMs, message: msg });
+                    addEventToTable(level, timestampMs, uptimeMs, msg);
 
                     const dateStr = timestampMs ? new Date(Number(timestampMs)).toLocaleString() : 'Unknown Time';
                     const uptimeStr = uptimeMs ? (Number(uptimeMs) / 1000).toFixed(0) : '0';
@@ -338,6 +344,51 @@ function downloadCSV() {
     document.body.removeChild(link);
 }
 
+function downloadEventsCSV() {
+    if (recordedEvents.length === 0) {
+        alert('No event data to download.');
+        return;
+    }
+
+    const headers = ['timestamp', 'uptime_ms', 'level', 'message'];
+    const csvRows = [headers.join(',')];
+
+    recordedEvents.forEach(data => {
+        const timestamp = data.timestampMs ? new Date(Number(data.timestampMs)).toISOString() : '';
+        const uptime = data.uptimeMs ? data.uptimeMs : '';
+
+        let levelText = '';
+        switch (data.level) {
+            case 0: levelText = 'INFO'; break;
+            case 1: levelText = 'WARNING'; break;
+            case 2: levelText = 'CRITICAL'; break;
+            case 3: levelText = 'FATAL'; break;
+            default: levelText = 'UNKNOWN';
+        }
+
+        const safeMsg = `"${data.message.replace(/"/g, '""')}"`;
+
+        csvRows.push([timestamp, uptime, levelText, safeMsg].join(','));
+    });
+
+    const blob = new Blob([csvRows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+
+    const now = new Date();
+    const pad = (num) => num.toString().padStart(2, '0');
+    const datePart = `${now.getFullYear().toString().slice(-2)}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+    const timePart = `${pad(now.getHours())}-${pad(now.getMinutes())}`;
+    const filename = `powermate_events_${datePart}_${timePart}.csv`;
+
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+}
+
 // --- Application Initialization ---
 
 async function initializeVersion() {
@@ -372,6 +423,7 @@ function initializeMainAppContent() {
     recordButton.addEventListener('click', startRecording);
     stopButton.addEventListener('click', stopRecording);
     downloadCsvButton.addEventListener('click', downloadCSV);
+    downloadEventsCsvButton.addEventListener('click', downloadEventsCSV);
 
     connect();
 

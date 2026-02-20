@@ -30,6 +30,10 @@ export const powerChartCtx = document.getElementById('powerChart')?.getContext('
 export const voltageChartCtx = document.getElementById('voltageChart')?.getContext('2d');
 export const currentChartCtx = document.getElementById('currentChart')?.getContext('2d');
 
+// --- Event Table Elements ---
+export const eventTableBody = document.getElementById('event-table-body');
+
+
 // --- WebSocket Status Elements ---
 export const websocketStatus = document.getElementById('websocket-status');
 export const websocketIcon = document.getElementById('websocket-icon');
