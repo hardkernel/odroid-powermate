@@ -14,9 +14,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h" // Added for FreeRTOS tasks
 #include "ina3221.h"
-#include "pb.h"
-#include "pb_encode.h"
-#include "status.pb.h"
+#include "pbmsg.h"
 #include "sw.h"
 #include "webserver.h"
 #include "wifi.h"
@@ -30,8 +28,6 @@
 
 #define PM_INT_CRITICAL CONFIG_GPIO_INA3221_INT_CRITICAL
 #define PM_EXPANDER_RST CONFIG_GPIO_EXPANDER_RESET
-
-#define PB_BUFFER_SIZE 256
 
 static const char* TAG = "monitor";
 
@@ -59,34 +55,6 @@ ina3221_t ina3221 = {
             .vsht = INA3221_CT_1100, // 1.1ms by channel (shunt)
         },
 };
-
-static bool encode_string(pb_ostream_t* stream, const pb_field_t* field, void* const* arg)
-{
-    const char* str = (const char*)(*arg);
-    if (!str)
-    {
-        return true; // Nothing to encode
-    }
-    if (!pb_encode_tag_for_field(stream, field))
-    {
-        return false;
-    }
-    return pb_encode_string(stream, (uint8_t*)str, strlen(str));
-}
-
-static void send_pb_message(const pb_msgdesc_t* fields, const void* src_struct)
-{
-    uint8_t buffer[PB_BUFFER_SIZE];
-    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
-
-    if (!pb_encode(&stream, fields, src_struct))
-    {
-        ESP_LOGE(TAG, "Failed to encode protobuf message: %s", PB_GET_ERROR(&stream));
-        return;
-    }
-
-    push_data_to_ws(buffer, stream.bytes_written);
-}
 
 static void sensor_timer_callback(void* arg)
 {
