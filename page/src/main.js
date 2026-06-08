@@ -59,6 +59,8 @@ const recordButton = document.getElementById('record-button');
 const stopButton = document.getElementById('stop-button');
 const downloadCsvButton = document.getElementById('download-csv-button');
 const downloadEventsCsvButton = document.getElementById('download-events-csv-button');
+const clearEventsButton = document.getElementById('clear-events-button');
+const eventTableBody = document.getElementById('event-table-body');
 
 
 // --- WebSocket Event Handlers ---
@@ -389,6 +391,13 @@ function downloadEventsCSV() {
     document.body.removeChild(link);
 }
 
+function clearEvents() {
+    recordedEvents = [];
+    if (eventTableBody) {
+        eventTableBody.innerHTML = '';
+    }
+}
+
 // --- Application Initialization ---
 
 async function initializeVersion() {
@@ -424,6 +433,7 @@ function initializeMainAppContent() {
     stopButton.addEventListener('click', stopRecording);
     downloadCsvButton.addEventListener('click', downloadCSV);
     downloadEventsCsvButton.addEventListener('click', downloadEventsCSV);
+    clearEventsButton.addEventListener('click', clearEvents);
 
     connect();
 
