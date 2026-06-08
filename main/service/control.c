@@ -66,12 +66,19 @@ static esp_err_t control_post_handler(httpd_req_t* req)
     }
 
     cJSON* item_12v = cJSON_GetObjectItem(root, "load_12v_on");
-    if (cJSON_IsBool(item_12v))
-        set_main_load_switch(cJSON_IsTrue(item_12v));
-
     cJSON* item_5v = cJSON_GetObjectItem(root, "load_5v_on");
-    if (cJSON_IsBool(item_5v))
-        set_usb_load_switch(cJSON_IsTrue(item_5v));
+    if (cJSON_IsBool(item_12v) || cJSON_IsBool(item_5v))
+    {
+        bool main_on = cJSON_IsBool(item_12v) ? cJSON_IsTrue(item_12v) : get_main_load_switch();
+        bool usb_on = cJSON_IsBool(item_5v) ? cJSON_IsTrue(item_5v) : get_usb_load_switch();
+        err = set_load_switches(main_on, usb_on);
+        if (err != ESP_OK)
+        {
+            cJSON_Delete(root);
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to set load switches");
+            return err;
+        }
+    }
 
     cJSON* power_trigger = cJSON_GetObjectItem(root, "power_trigger");
     if (cJSON_IsTrue(power_trigger))

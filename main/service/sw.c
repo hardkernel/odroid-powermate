@@ -69,6 +69,64 @@ static void send_sw_status_message()
     push_data_to_ws(buffer, stream.bytes_written);
 }
 
+void publish_load_switch_status()
+{
+    send_sw_status_message();
+}
+
+esp_err_t sync_load_switch_status_from_hw()
+{
+    uint32_t val = 0;
+    esp_err_t err = pca9557_get_level(&pca, CONFIG_EXPANDER_GPIO_SW_12V, &val);
+    if (err != ESP_OK)
+        return err;
+    load_switch_12v_status = val != 0 ? true : false;
+
+    err = pca9557_get_level(&pca, CONFIG_EXPANDER_GPIO_SW_5V, &val);
+    if (err != ESP_OK)
+        return err;
+    load_switch_5v_status = val != 0 ? true : false;
+
+    send_sw_status_message();
+    return ESP_OK;
+}
+
+esp_err_t set_load_switches(bool main_on, bool usb_on)
+{
+    ESP_LOGI(TAG, "Set load switches: main=%s usb=%s", main_on ? "on" : "off", usb_on ? "on" : "off");
+    if (load_switch_12v_status == main_on && load_switch_5v_status == usb_on)
+    {
+        send_sw_status_message();
+        return ESP_OK;
+    }
+
+    if (xSemaphoreTake(expander_mutex, MUTEX_TIMEOUT) == pdFALSE)
+    {
+        ESP_LOGW(TAG, "Control error");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    esp_err_t main_err = ESP_OK;
+    esp_err_t usb_err = ESP_OK;
+    if (load_switch_12v_status != main_on)
+        main_err = pca9557_set_level(&pca, GPIO_MAIN, main_on);
+    if (load_switch_5v_status != usb_on)
+        usb_err = pca9557_set_level(&pca, GPIO_USB, usb_on);
+    xSemaphoreGive(expander_mutex);
+
+    if (main_err != ESP_OK || usb_err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to set load switches: main=%s usb=%s", esp_err_to_name(main_err),
+                 esp_err_to_name(usb_err));
+        return main_err != ESP_OK ? main_err : usb_err;
+    }
+
+    load_switch_12v_status = main_on;
+    load_switch_5v_status = usb_on;
+    push_eventf(EV_INFO, "load switches set: main=%s usb=%s", main_on ? "on" : "off", usb_on ? "on" : "off");
+    send_sw_status_message();
+    return ESP_OK;
+}
 
 static void trigger_off_callback(void* arg)
 {
@@ -93,13 +151,7 @@ void config_sw()
     ESP_ERROR_CHECK(pca9557_set_level(&pca, GPIO_PWR, 1));
     ESP_ERROR_CHECK(pca9557_set_level(&pca, GPIO_RST, 1));
 
-    uint32_t val = 0;
-    ESP_ERROR_CHECK(pca9557_get_level(&pca, CONFIG_EXPANDER_GPIO_SW_12V, &val));
-    load_switch_12v_status = val != 0 ? true : false;
-    ESP_ERROR_CHECK(pca9557_get_level(&pca, CONFIG_EXPANDER_GPIO_SW_5V, &val));
-    load_switch_5v_status = val != 0 ? true : false;
-
-    send_sw_status_message();
+    ESP_ERROR_CHECK(sync_load_switch_status_from_hw());
 }
 
 void init_sw()
@@ -149,38 +201,16 @@ void trig_reset()
     esp_timer_start_once(reset_trigger_timer, RESET_DELAY);
 }
 
-void set_main_load_switch(bool on)
+esp_err_t set_main_load_switch(bool on)
 {
     ESP_LOGI(TAG, "Set main load switch to %s", on ? "on" : "off");
-    if (load_switch_12v_status == on)
-        return;
-    if (xSemaphoreTake(expander_mutex, MUTEX_TIMEOUT) == pdFALSE)
-    {
-        ESP_LOGW(TAG, "Control error");
-        return;
-    }
-    pca9557_set_level(&pca, GPIO_MAIN, on);
-    load_switch_12v_status = on;
-    xSemaphoreGive(expander_mutex);
-    push_eventf(EV_INFO, "main load switch set: %s", on ? "on" : "off");
-    send_sw_status_message();
+    return set_load_switches(on, load_switch_5v_status);
 }
 
-void set_usb_load_switch(bool on)
+esp_err_t set_usb_load_switch(bool on)
 {
     ESP_LOGI(TAG, "Set usb load switch to %s", on ? "on" : "off");
-    if (load_switch_5v_status == on)
-        return;
-    if (xSemaphoreTake(expander_mutex, MUTEX_TIMEOUT) == pdFALSE)
-    {
-        ESP_LOGW(TAG, "Control error");
-        return;
-    }
-    pca9557_set_level(&pca, GPIO_USB, on);
-    load_switch_5v_status = on;
-    xSemaphoreGive(expander_mutex);
-    push_eventf(EV_INFO, "usb load switch set: %s", on ? "on" : "off");
-    send_sw_status_message();
+    return set_load_switches(load_switch_12v_status, on);
 }
 
 bool get_main_load_switch() { return load_switch_12v_status; }

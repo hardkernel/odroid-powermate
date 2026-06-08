@@ -39,9 +39,12 @@ enum nconfig_type
     NETIF_DNS2,         ///< The secondary DNS server address.
     NETIF_TYPE,         ///< The network interface type (e.g., "dhcp" or "static").
     UART_BAUD_RATE,     ///< The baud rate for the UART communication.
-    VIN_CURRENT_LIMIT, ///< The maximum current limit for the VIN.
-    MAIN_CURRENT_LIMIT, ///< The maximum current limit for the MAIN out.
-    USB_CURRENT_LIMIT, ///< The maximum current limit for the USB out.
+    VIN_CURRENT_LIMIT, ///< The warning current limit for the VIN.
+    MAIN_CURRENT_LIMIT, ///< The warning current limit for the MAIN out.
+    USB_CURRENT_LIMIT, ///< The warning current limit for the USB out.
+    VIN_CRITICAL_CURRENT_LIMIT, ///< The shutdown current limit for the VIN.
+    MAIN_CRITICAL_CURRENT_LIMIT, ///< The shutdown current limit for the MAIN out.
+    USB_CRITICAL_CURRENT_LIMIT, ///< The shutdown current limit for the USB out.
     PAGE_USERNAME, ///< Webpage username
     PAGE_PASSWORD, ///< Webpage password
     SENSOR_PERIOD_MS, ///< Sensor period

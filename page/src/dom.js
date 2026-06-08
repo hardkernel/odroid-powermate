@@ -88,10 +88,16 @@ export const rebootButton = document.getElementById('reboot-button');
 // --- Current Limit Settings Elements ---
 export const vinSlider = document.getElementById('vin-current-limit-slider');
 export const vinValueSpan = document.getElementById('vin-current-limit-value');
+export const vinCriticalSlider = document.getElementById('vin-critical-current-limit-slider');
+export const vinCriticalValueSpan = document.getElementById('vin-critical-current-limit-value');
 export const mainSlider = document.getElementById('main-current-limit-slider');
 export const mainValueSpan = document.getElementById('main-current-limit-value');
+export const mainCriticalSlider = document.getElementById('main-critical-current-limit-slider');
+export const mainCriticalValueSpan = document.getElementById('main-critical-current-limit-value');
 export const usbSlider = document.getElementById('usb-current-limit-slider');
 export const usbValueSpan = document.getElementById('usb-current-limit-value');
+export const usbCriticalSlider = document.getElementById('usb-critical-current-limit-slider');
+export const usbCriticalValueSpan = document.getElementById('usb-critical-current-limit-value');
 export const currentLimitApplyButton = document.getElementById('current-limit-apply-button');
 
 // --- Footer ---

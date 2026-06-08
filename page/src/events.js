@@ -15,6 +15,8 @@ import {debounce, isMobile} from './utils.js';
 // A flag to track if charts have been initialized
 let chartsInitialized = false;
 let listenersAttached = false;
+let powerControlRequestInFlight = false;
+const CURRENT_LIMIT_STEP_A = 0.1;
 
 // --- Helper functions for settings ---
 
@@ -28,6 +30,86 @@ function updateSliderValue(slider, span) {
     }
 }
 
+function roundToStep(value) {
+    return Math.round(value / CURRENT_LIMIT_STEP_A) * CURRENT_LIMIT_STEP_A;
+}
+
+function sliderMax(slider) {
+    return parseFloat(slider.dataset.max || slider.max);
+}
+
+function setSliderValue(slider, value) {
+    slider.value = roundToStep(value).toFixed(1);
+}
+
+function syncCurrentLimitPair(limitSlider, limitSpan, criticalSlider, criticalSpan, changedSlider = null) {
+    if (!limitSlider || !criticalSlider) return;
+
+    const limitCeiling = sliderMax(limitSlider);
+    const criticalFloor = parseFloat(criticalSlider.min);
+    const criticalCeiling = parseFloat(criticalSlider.max);
+    let limit = parseFloat(limitSlider.value);
+    let critical = parseFloat(criticalSlider.value);
+
+    if (critical < criticalFloor) {
+        critical = criticalFloor;
+    }
+    if (critical > criticalCeiling) {
+        critical = criticalCeiling;
+    }
+
+    if (changedSlider === limitSlider && limit > 0 && limit >= critical) {
+        const raisedCritical = Math.min(criticalCeiling, limit + CURRENT_LIMIT_STEP_A);
+        if (raisedCritical > limit) {
+            critical = raisedCritical;
+        } else {
+            limit = Math.max(0, critical - CURRENT_LIMIT_STEP_A);
+        }
+    }
+
+    if (changedSlider === criticalSlider && limit > 0 && limit >= critical) {
+        limit = Math.max(0, critical - CURRENT_LIMIT_STEP_A);
+    }
+
+    const effectiveLimitMax = Math.max(0, Math.min(limitCeiling, critical - CURRENT_LIMIT_STEP_A));
+    limitSlider.max = effectiveLimitMax.toFixed(1);
+    if (limit > effectiveLimitMax) {
+        limit = effectiveLimitMax;
+    }
+
+    setSliderValue(limitSlider, limit);
+    setSliderValue(criticalSlider, critical);
+    updateSliderValue(limitSlider, limitSpan);
+    updateSliderValue(criticalSlider, criticalSpan);
+}
+
+function syncAllCurrentLimitPairs(changedSlider = null) {
+    syncCurrentLimitPair(dom.vinSlider, dom.vinValueSpan, dom.vinCriticalSlider, dom.vinCriticalValueSpan,
+        changedSlider);
+    syncCurrentLimitPair(dom.mainSlider, dom.mainValueSpan, dom.mainCriticalSlider, dom.mainCriticalValueSpan,
+        changedSlider);
+    syncCurrentLimitPair(dom.usbSlider, dom.usbValueSpan, dom.usbCriticalSlider, dom.usbCriticalValueSpan,
+        changedSlider);
+}
+
+function currentLimitPairIsValid(name, limitSlider, criticalSlider) {
+    const limit = parseFloat(limitSlider.value);
+    const critical = parseFloat(criticalSlider.value);
+    const criticalMin = parseFloat(criticalSlider.min);
+
+    if (critical < criticalMin) {
+        alert(`${name} Critical Limit must be at least ${criticalMin.toFixed(1)} A.`);
+        return false;
+    }
+
+    if (limit > 0 && limit >= critical) {
+        alert(`${name} Limit must be lower than Critical Limit.`);
+        return false;
+    }
+
+    return true;
+}
+
 function loadCurrentLimitSettings() {
     fetch('/api/setting', {
         headers: getAuthHeaders(), // Add auth headers
@@ -37,18 +119,48 @@ function loadCurrentLimitSettings() {
         .then(data => {
             if (data.vin_current_limit !== undefined) {
                 dom.vinSlider.value = data.vin_current_limit;
-                updateSliderValue(dom.vinSlider, dom.vinValueSpan);
+            }
+            if (data.vin_critical_current_limit !== undefined) {
+                dom.vinCriticalSlider.value = data.vin_critical_current_limit;
             }
             if (data.main_current_limit !== undefined) {
                 dom.mainSlider.value = data.main_current_limit;
-                updateSliderValue(dom.mainSlider, dom.mainValueSpan);
+            }
+            if (data.main_critical_current_limit !== undefined) {
+                dom.mainCriticalSlider.value = data.main_critical_current_limit;
             }
             if (data.usb_current_limit !== undefined) {
                 dom.usbSlider.value = data.usb_current_limit;
-                updateSliderValue(dom.usbSlider, dom.usbValueSpan);
             }
+            if (data.usb_critical_current_limit !== undefined) {
+                dom.usbCriticalSlider.value = data.usb_critical_current_limit;
+            }
+            syncAllCurrentLimitPairs();
         })
         .catch(error => console.error('Error fetching current limit settings:', error));
+}
+
+function setPowerTogglesDisabled(disabled) {
+    dom.mainPowerToggle.disabled = disabled;
+    dom.usbPowerToggle.disabled = disabled;
+}
+
+function postPowerToggleCommand(command) {
+    if (powerControlRequestInFlight) {
+        return;
+    }
+
+    powerControlRequestInFlight = true;
+    setPowerTogglesDisabled(true);
+    api.postControlCommand(command)
+        .catch(error => {
+            console.error('Error posting power control command:', error);
+            ui.updateControlStatus();
+        })
+        .finally(() => {
+            powerControlRequestInFlight = false;
+            setPowerTogglesDisabled(false);
+        });
 }
 
 /**
@@ -66,8 +178,8 @@ export function setupEventListeners() {
     dom.downloadButton.addEventListener('click', downloadTerminalOutput);
 
     // --- Power Controls ---
-    dom.mainPowerToggle.addEventListener('change', () => api.postControlCommand({'load_12v_on': dom.mainPowerToggle.checked}).then(ui.updateControlStatus));
-    dom.usbPowerToggle.addEventListener('change', () => api.postControlCommand({'load_5v_on': dom.usbPowerToggle.checked}).then(ui.updateControlStatus));
+    dom.mainPowerToggle.addEventListener('change', () => postPowerToggleCommand({'load_12v_on': dom.mainPowerToggle.checked}));
+    dom.usbPowerToggle.addEventListener('change', () => postPowerToggleCommand({'load_5v_on': dom.usbPowerToggle.checked}));
     dom.resetButton.addEventListener('click', () => api.postControlCommand({'reset_trigger': true}));
     dom.powerActionButton.addEventListener('click', () => api.postControlCommand({'power_trigger': true}));
 
@@ -109,15 +221,34 @@ export function setupEventListeners() {
     }
 
     // --- Current Limit Settings ---
-    dom.vinSlider.addEventListener('input', () => updateSliderValue(dom.vinSlider, dom.vinValueSpan));
-    dom.mainSlider.addEventListener('input', () => updateSliderValue(dom.mainSlider, dom.mainValueSpan));
-    dom.usbSlider.addEventListener('input', () => updateSliderValue(dom.usbSlider, dom.usbValueSpan));
+    dom.vinSlider.addEventListener('input', () => syncCurrentLimitPair(dom.vinSlider, dom.vinValueSpan,
+        dom.vinCriticalSlider, dom.vinCriticalValueSpan, dom.vinSlider));
+    dom.vinCriticalSlider.addEventListener('input', () => syncCurrentLimitPair(dom.vinSlider, dom.vinValueSpan,
+        dom.vinCriticalSlider, dom.vinCriticalValueSpan, dom.vinCriticalSlider));
+    dom.mainSlider.addEventListener('input', () => syncCurrentLimitPair(dom.mainSlider, dom.mainValueSpan,
+        dom.mainCriticalSlider, dom.mainCriticalValueSpan, dom.mainSlider));
+    dom.mainCriticalSlider.addEventListener('input', () => syncCurrentLimitPair(dom.mainSlider, dom.mainValueSpan,
+        dom.mainCriticalSlider, dom.mainCriticalValueSpan, dom.mainCriticalSlider));
+    dom.usbSlider.addEventListener('input', () => syncCurrentLimitPair(dom.usbSlider, dom.usbValueSpan,
+        dom.usbCriticalSlider, dom.usbCriticalValueSpan, dom.usbSlider));
+    dom.usbCriticalSlider.addEventListener('input', () => syncCurrentLimitPair(dom.usbSlider, dom.usbValueSpan,
+        dom.usbCriticalSlider, dom.usbCriticalValueSpan, dom.usbCriticalSlider));
 
     dom.currentLimitApplyButton.addEventListener('click', () => {
+        syncAllCurrentLimitPairs();
+        if (!currentLimitPairIsValid('VIN', dom.vinSlider, dom.vinCriticalSlider) ||
+            !currentLimitPairIsValid('Main', dom.mainSlider, dom.mainCriticalSlider) ||
+            !currentLimitPairIsValid('USB', dom.usbSlider, dom.usbCriticalSlider)) {
+            return;
+        }
+
         const settings = {
             vin_current_limit: parseFloat(dom.vinSlider.value),
             main_current_limit: parseFloat(dom.mainSlider.value),
-            usb_current_limit: parseFloat(dom.usbSlider.value)
+            usb_current_limit: parseFloat(dom.usbSlider.value),
+            vin_critical_current_limit: parseFloat(dom.vinCriticalSlider.value),
+            main_critical_current_limit: parseFloat(dom.mainCriticalSlider.value),
+            usb_critical_current_limit: parseFloat(dom.usbCriticalSlider.value)
         };
 
         fetch('/api/setting', {

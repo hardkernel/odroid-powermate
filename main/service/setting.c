@@ -1,4 +1,6 @@
 #include <stdlib.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 #include "auth.h"
 #include "cJSON.h"
@@ -29,23 +31,71 @@ static const char* climit_display_name(const char* name)
     return name;
 }
 
-static bool handle_climit_item(cJSON* item, const char* name, double max_value, enum nconfig_type config_type,
-                               climit_set_fn_t set_fn, climit_get_fn_t get_fn, cJSON* results, bool* any_success,
-                               bool* any_failure)
+static double read_climit_config_or_default(enum nconfig_type config_type, double default_value)
+{
+    char buf[16];
+    if (nconfig_read(config_type, buf, sizeof(buf)) == ESP_OK)
+        return atof(buf);
+    return default_value;
+}
+
+static double clamp_setting_value(double value, double min_value, double max_value)
+{
+    if (value < min_value)
+        return min_value;
+    if (value > max_value)
+        return max_value;
+    return value;
+}
+
+static bool validate_climit_pair(cJSON* limit_item, cJSON* critical_item, const char* name,
+                                 enum nconfig_type limit_config_type, enum nconfig_type critical_config_type,
+                                 double default_limit, double default_critical, cJSON* results, bool* any_failure)
+{
+    double limit = cJSON_IsNumber(limit_item) ? limit_item->valuedouble
+                                             : read_climit_config_or_default(limit_config_type, default_limit);
+    double critical = cJSON_IsNumber(critical_item) ? critical_item->valuedouble
+                                                   : read_climit_config_or_default(critical_config_type,
+                                                                                  default_critical);
+
+    if (limit <= 0.0 || critical <= 0.0 || limit < critical)
+        return true;
+
+    const char* display_name = climit_display_name(name);
+    cJSON* result = cJSON_CreateObject();
+    char key[32];
+    snprintf(key, sizeof(key), "%s_relation", name);
+    cJSON_AddItemToObject(results, key, result);
+    cJSON_AddStringToObject(result, "status", "error");
+    cJSON_AddStringToObject(result, "error", "limit must be lower than critical limit");
+    cJSON_AddNumberToObject(result, "limit_a", limit);
+    cJSON_AddNumberToObject(result, "critical_limit_a", critical);
+
+    ESP_LOGW(TAG, "%s current limit request rejected: limit=%.3fA, critical=%.3fA", display_name, limit,
+             critical);
+    push_eventf(EV_WARNING, "%s current limit request rejected: limit=%.3fA, critical=%.3fA", display_name, limit,
+                critical);
+    *any_failure = true;
+    return false;
+}
+
+static bool handle_climit_item(cJSON* item, const char* key, const char* name, const char* label, double min_value,
+                               double max_value, bool allow_zero, enum nconfig_type config_type, climit_set_fn_t set_fn,
+                               climit_get_fn_t get_fn, cJSON* results, bool* any_success, bool* any_failure)
 {
     if (!item)
         return false;
 
     const char* display_name = climit_display_name(name);
     cJSON* result = cJSON_CreateObject();
-    cJSON_AddItemToObject(results, name, result);
+    cJSON_AddItemToObject(results, key, result);
 
     if (!cJSON_IsNumber(item))
     {
         cJSON_AddStringToObject(result, "status", "error");
         cJSON_AddStringToObject(result, "error", "not a number");
-        ESP_LOGW(TAG, "%s current limit request rejected: value is not a number", display_name);
-        push_eventf(EV_WARNING, "%s current limit request rejected: value is not a number", display_name);
+        ESP_LOGW(TAG, "%s %s request rejected: value is not a number", display_name, label);
+        push_eventf(EV_WARNING, "%s %s request rejected: value is not a number", display_name, label);
         *any_failure = true;
         return true;
     }
@@ -53,15 +103,16 @@ static bool handle_climit_item(cJSON* item, const char* name, double max_value, 
     double val = item->valuedouble;
     cJSON_AddNumberToObject(result, "requested_a", val);
 
-    if (val < 0.0 || val > max_value)
+    if (val < 0.0 || val > max_value || (!allow_zero && val < min_value))
     {
         cJSON_AddStringToObject(result, "status", "error");
-        cJSON_AddStringToObject(result, "error", "out of range");
+        cJSON_AddStringToObject(result, "error", !allow_zero && val < min_value ? "below minimum" : "out of range");
+        cJSON_AddNumberToObject(result, "min_a", min_value);
         cJSON_AddNumberToObject(result, "max_a", max_value);
-        ESP_LOGW(TAG, "%s current limit request rejected: requested=%.3fA, max=%.3fA", display_name, val,
-                 max_value);
-        push_eventf(EV_WARNING, "%s current limit request rejected: requested=%.3fA, max=%.3fA", display_name, val,
-                    max_value);
+        ESP_LOGW(TAG, "%s %s request rejected: requested=%.3fA, min=%.3fA, max=%.3fA", display_name, label, val,
+                 min_value, max_value);
+        push_eventf(EV_WARNING, "%s %s request rejected: requested=%.3fA, min=%.3fA, max=%.3fA", display_name,
+                    label, val, min_value, max_value);
         *any_failure = true;
         return true;
     }
@@ -71,24 +122,23 @@ static bool handle_climit_item(cJSON* item, const char* name, double max_value, 
     {
         cJSON_AddStringToObject(result, "status", "error");
         cJSON_AddStringToObject(result, "error", esp_err_to_name(err));
-        ESP_LOGW(TAG, "%s current limit set failed: requested=%.3fA, error=%s", display_name, val,
+        ESP_LOGW(TAG, "%s %s set failed: requested=%.3fA, error=%s", display_name, label, val,
                  esp_err_to_name(err));
-        push_eventf(EV_WARNING, "%s current limit set failed: requested=%.3fA, error=%s", display_name, val,
+        push_eventf(EV_WARNING, "%s %s set failed: requested=%.3fA, error=%s", display_name, label, val,
                     esp_err_to_name(err));
         *any_failure = true;
         return true;
     }
 
     float applied_a = 0.0f;
-    uint16_t raw = 0;
-    err = get_fn(&applied_a, &raw);
+    err = get_fn(&applied_a, NULL);
     if (err != ESP_OK)
     {
         cJSON_AddStringToObject(result, "status", "error");
         cJSON_AddStringToObject(result, "error", esp_err_to_name(err));
-        ESP_LOGW(TAG, "%s current limit readback failed: requested=%.3fA, error=%s", display_name, val,
+        ESP_LOGW(TAG, "%s %s readback failed: requested=%.3fA, error=%s", display_name, label, val,
                  esp_err_to_name(err));
-        push_eventf(EV_WARNING, "%s current limit readback failed: requested=%.3fA, error=%s", display_name, val,
+        push_eventf(EV_WARNING, "%s %s readback failed: requested=%.3fA, error=%s", display_name, label, val,
                     esp_err_to_name(err));
         *any_failure = true;
         return true;
@@ -102,18 +152,16 @@ static bool handle_climit_item(cJSON* item, const char* name, double max_value, 
         cJSON_AddStringToObject(result, "status", "error");
         cJSON_AddStringToObject(result, "error", esp_err_to_name(err));
         cJSON_AddNumberToObject(result, "applied_a", applied_a);
-        cJSON_AddNumberToObject(result, "raw", raw);
-        ESP_LOGW(TAG, "%s current limit save failed: requested=%.3fA, applied=%.3fA, error=%s", display_name, val,
+        ESP_LOGW(TAG, "%s %s save failed: requested=%.3fA, applied=%.3fA, error=%s", display_name, label, val,
                  applied_a, esp_err_to_name(err));
-        push_eventf(EV_WARNING, "%s current limit save failed: requested=%.3fA, applied=%.3fA, error=%s",
-                    display_name, val, applied_a, esp_err_to_name(err));
+        push_eventf(EV_WARNING, "%s %s save failed: requested=%.3fA, applied=%.3fA, error=%s", display_name, label,
+                    val, applied_a, esp_err_to_name(err));
         *any_failure = true;
         return true;
     }
 
     cJSON_AddStringToObject(result, "status", "ok");
     cJSON_AddNumberToObject(result, "applied_a", applied_a);
-    cJSON_AddNumberToObject(result, "raw", raw);
     *any_success = true;
     return true;
 }
@@ -170,6 +218,24 @@ static esp_err_t setting_get_handler(httpd_req_t* req)
     if (nconfig_read(USB_CURRENT_LIMIT, buf, sizeof(buf)) == ESP_OK)
     {
         cJSON_AddNumberToObject(root, "usb_current_limit", atof(buf));
+    }
+    if (nconfig_read(VIN_CRITICAL_CURRENT_LIMIT, buf, sizeof(buf)) == ESP_OK)
+    {
+        cJSON_AddNumberToObject(root, "vin_critical_current_limit",
+                                clamp_setting_value(atof(buf), CRITICAL_CURRENT_LIMIT_MIN,
+                                                    VIN_CRITICAL_CURRENT_LIMIT_MAX));
+    }
+    if (nconfig_read(MAIN_CRITICAL_CURRENT_LIMIT, buf, sizeof(buf)) == ESP_OK)
+    {
+        cJSON_AddNumberToObject(root, "main_critical_current_limit",
+                                clamp_setting_value(atof(buf), CRITICAL_CURRENT_LIMIT_MIN,
+                                                    MAIN_CRITICAL_CURRENT_LIMIT_MAX));
+    }
+    if (nconfig_read(USB_CRITICAL_CURRENT_LIMIT, buf, sizeof(buf)) == ESP_OK)
+    {
+        cJSON_AddNumberToObject(root, "usb_critical_current_limit",
+                                clamp_setting_value(atof(buf), CRITICAL_CURRENT_LIMIT_MIN,
+                                                    USB_CRITICAL_CURRENT_LIMIT_MAX));
     }
 
     if (wifi_get_current_ap_info(&ap_info) == ESP_OK)
@@ -263,7 +329,7 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
         return err;
     }
 
-    char buf[512];
+    char buf[1024];
     int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
 
     if (received <= 0)
@@ -289,6 +355,9 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
     cJSON* vin_climit_item = cJSON_GetObjectItem(root, "vin_current_limit");
     cJSON* main_climit_item = cJSON_GetObjectItem(root, "main_current_limit");
     cJSON* usb_climit_item = cJSON_GetObjectItem(root, "usb_current_limit");
+    cJSON* vin_critical_climit_item = cJSON_GetObjectItem(root, "vin_critical_current_limit");
+    cJSON* main_critical_climit_item = cJSON_GetObjectItem(root, "main_critical_current_limit");
+    cJSON* usb_critical_climit_item = cJSON_GetObjectItem(root, "usb_critical_current_limit");
     cJSON* new_username_item = cJSON_GetObjectItem(root, "new_username");
     cJSON* new_password_item = cJSON_GetObjectItem(root, "new_password");
 
@@ -404,19 +473,57 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
         action_taken = true;
     }
 
-    if (vin_climit_item || main_climit_item || usb_climit_item)
+    if (vin_climit_item || main_climit_item || usb_climit_item || vin_critical_climit_item ||
+        main_critical_climit_item || usb_critical_climit_item)
     {
         bool climit_success = false;
         bool climit_failure = false;
         cJSON* climit_results = cJSON_CreateObject();
         cJSON_AddItemToObject(resp_root, "climit_results", climit_results);
 
-        handle_climit_item(vin_climit_item, "vin", VIN_CURRENT_LIMIT_MAX, VIN_CURRENT_LIMIT, climit_set_vin,
-                           climit_get_vin, climit_results, &climit_success, &climit_failure);
-        handle_climit_item(main_climit_item, "main", MAIN_CURRENT_LIMIT_MAX, MAIN_CURRENT_LIMIT, climit_set_main,
-                           climit_get_main, climit_results, &climit_success, &climit_failure);
-        handle_climit_item(usb_climit_item, "usb", USB_CURRENT_LIMIT_MAX, USB_CURRENT_LIMIT, climit_set_usb,
-                           climit_get_usb, climit_results, &climit_success, &climit_failure);
+        bool vin_relation_ok = validate_climit_pair(vin_climit_item, vin_critical_climit_item, "vin",
+                                                    VIN_CURRENT_LIMIT, VIN_CRITICAL_CURRENT_LIMIT, 4.0,
+                                                    VIN_CRITICAL_CURRENT_LIMIT_MAX, climit_results,
+                                                    &climit_failure);
+        bool main_relation_ok = validate_climit_pair(main_climit_item, main_critical_climit_item, "main",
+                                                     MAIN_CURRENT_LIMIT, MAIN_CRITICAL_CURRENT_LIMIT, 3.0,
+                                                     MAIN_CRITICAL_CURRENT_LIMIT_MAX, climit_results,
+                                                     &climit_failure);
+        bool usb_relation_ok = validate_climit_pair(usb_climit_item, usb_critical_climit_item, "usb",
+                                                    USB_CURRENT_LIMIT, USB_CRITICAL_CURRENT_LIMIT, 3.0,
+                                                    USB_CRITICAL_CURRENT_LIMIT_MAX, climit_results,
+                                                    &climit_failure);
+
+        if (vin_relation_ok)
+        {
+            handle_climit_item(vin_climit_item, "vin", "vin", "current limit", 0.0, VIN_CURRENT_LIMIT_MAX, true,
+                               VIN_CURRENT_LIMIT, climit_set_vin, climit_get_vin, climit_results, &climit_success,
+                               &climit_failure);
+            handle_climit_item(vin_critical_climit_item, "vin_critical", "vin", "critical current limit",
+                               CRITICAL_CURRENT_LIMIT_MIN, VIN_CRITICAL_CURRENT_LIMIT_MAX, false, VIN_CRITICAL_CURRENT_LIMIT,
+                               climit_set_critical_vin, climit_get_critical_vin, climit_results, &climit_success,
+                               &climit_failure);
+        }
+        if (main_relation_ok)
+        {
+            handle_climit_item(main_climit_item, "main", "main", "current limit", 0.0, MAIN_CURRENT_LIMIT_MAX, true,
+                               MAIN_CURRENT_LIMIT, climit_set_main, climit_get_main, climit_results,
+                               &climit_success, &climit_failure);
+            handle_climit_item(main_critical_climit_item, "main_critical", "main", "critical current limit",
+                               CRITICAL_CURRENT_LIMIT_MIN, MAIN_CRITICAL_CURRENT_LIMIT_MAX, false, MAIN_CRITICAL_CURRENT_LIMIT,
+                               climit_set_critical_main, climit_get_critical_main, climit_results,
+                               &climit_success, &climit_failure);
+        }
+        if (usb_relation_ok)
+        {
+            handle_climit_item(usb_climit_item, "usb", "usb", "current limit", 0.0, USB_CURRENT_LIMIT_MAX, true,
+                               USB_CURRENT_LIMIT, climit_set_usb, climit_get_usb, climit_results, &climit_success,
+                               &climit_failure);
+            handle_climit_item(usb_critical_climit_item, "usb_critical", "usb", "critical current limit",
+                               CRITICAL_CURRENT_LIMIT_MIN, USB_CRITICAL_CURRENT_LIMIT_MAX, false, USB_CRITICAL_CURRENT_LIMIT,
+                               climit_set_critical_usb, climit_get_critical_usb, climit_results, &climit_success,
+                               &climit_failure);
+        }
 
         if (climit_failure)
         {

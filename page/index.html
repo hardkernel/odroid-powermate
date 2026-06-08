@@ -340,26 +340,54 @@
                     <div class="tab-pane fade" id="current-limit-settings-pane" role="tabpanel">
                         <div class="alert alert-info mt-3" role="alert">
                             <i class="bi bi-info-circle-fill me-2"></i>
-                            Set a value of <strong>0.0</strong> to disable a specific current limit. The value will be
-                            rounded to one decimal place.
+                            <strong>Limit</strong> disables the matching load switch when the warning threshold is exceeded.
+                            VIN Limit disables all load switches. <strong>Critical Limit</strong> disables all load switches.
+                            Limit must be lower than Critical Limit. Set Limit to <strong>0.0</strong> to disable warning actions.
                         </div>
-                        <div class="mb-4">
-                            <label class="form-label" for="vin-current-limit-slider">VIN Current Limit: <span
-                                    class="fw-bold text-primary" id="vin-current-limit-value">...</span></label>
-                            <input class="form-range" id="vin-current-limit-slider" max="8.0" min="0" step="0.1"
-                                   type="range">
+                        <div class="mb-4 p-3 border rounded">
+                            <h6>VIN</h6>
+                            <div class="mb-3">
+                                <label class="form-label" for="vin-current-limit-slider">Limit: <span
+                                        class="fw-bold text-primary" id="vin-current-limit-value">...</span></label>
+                                <input class="form-range" id="vin-current-limit-slider" data-max="10.0" max="10.0"
+                                       min="0" step="0.1" type="range">
+                            </div>
+                            <div>
+                                <label class="form-label" for="vin-critical-current-limit-slider">Critical Limit: <span
+                                        class="fw-bold text-danger" id="vin-critical-current-limit-value">...</span></label>
+                                <input class="form-range" id="vin-critical-current-limit-slider" max="15.0" min="1.0"
+                                       step="0.1" type="range">
+                            </div>
                         </div>
-                        <div class="mb-4">
-                            <label class="form-label" for="main-current-limit-slider">Main Current Limit: <span
-                                    class="fw-bold text-primary" id="main-current-limit-value">...</span></label>
-                            <input class="form-range" id="main-current-limit-slider" max="7.5" min="0" step="0.1"
-                                   type="range">
+                        <div class="mb-4 p-3 border rounded">
+                            <h6>Main</h6>
+                            <div class="mb-3">
+                                <label class="form-label" for="main-current-limit-slider">Limit: <span
+                                        class="fw-bold text-primary" id="main-current-limit-value">...</span></label>
+                                <input class="form-range" id="main-current-limit-slider" data-max="10.0" max="10.0"
+                                       min="0" step="0.1" type="range">
+                            </div>
+                            <div>
+                                <label class="form-label" for="main-critical-current-limit-slider">Critical Limit: <span
+                                        class="fw-bold text-danger" id="main-critical-current-limit-value">...</span></label>
+                                <input class="form-range" id="main-critical-current-limit-slider" max="11.0" min="1.0"
+                                       step="0.1" type="range">
+                            </div>
                         </div>
-                        <div class="mb-4">
-                            <label class="form-label" for="usb-current-limit-slider">USB Current Limit: <span
-                                    class="fw-bold text-primary" id="usb-current-limit-value">...</span></label>
-                            <input class="form-range" id="usb-current-limit-slider" max="4.5" min="0" step="0.1"
-                                   type="range">
+                        <div class="mb-4 p-3 border rounded">
+                            <h6>USB</h6>
+                            <div class="mb-3">
+                                <label class="form-label" for="usb-current-limit-slider">Limit: <span
+                                        class="fw-bold text-primary" id="usb-current-limit-value">...</span></label>
+                                <input class="form-range" id="usb-current-limit-slider" data-max="5.9" max="5.9"
+                                       min="0" step="0.1" type="range">
+                            </div>
+                            <div>
+                                <label class="form-label" for="usb-critical-current-limit-slider">Critical Limit: <span
+                                        class="fw-bold text-danger" id="usb-critical-current-limit-value">...</span></label>
+                                <input class="form-range" id="usb-critical-current-limit-slider" max="6.0" min="1.0"
+                                       step="0.1" type="range">
+                            </div>
                         </div>
                         <div class="d-flex justify-content-end pt-3 border-top mt-3">
                             <button class="btn btn-primary me-2" id="current-limit-apply-button" type="button">Apply

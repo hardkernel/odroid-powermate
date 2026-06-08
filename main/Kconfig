@@ -28,7 +28,7 @@ menu "ODROID-MONITOR"
 			range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
 			default 5
 			help
-				GPIO number for critical int pin.
+				GPIO number for warning int pin.
 
 		config GPIO_UART_TX
 			int "UART TX GPIO Num"

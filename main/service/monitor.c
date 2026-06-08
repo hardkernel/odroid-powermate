@@ -4,6 +4,8 @@
 
 #include "monitor.h"
 #include <nconfig.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/time.h>
 #include <time.h>
 #include "climit.h"
@@ -28,9 +30,12 @@
 #define PM_SCL CONFIG_I2C_GPIO_SCL
 
 #define PM_INT_CRITICAL CONFIG_GPIO_INA3221_INT_CRITICAL
+#define PM_INT_WARNING CONFIG_GPIO_INA3221_INT_WARNING
 #define PM_EXPANDER_RST CONFIG_GPIO_EXPANDER_RESET
 
 #define INA3221_REG_CRITICAL_ALERT_1 0x07
+#define INA3221_REG_WARNING_ALERT_1 0x08
+#define INA3221_REG_MASK 0x0F
 #define CLIMIT_DISABLED_LIMIT_A 15.0f
 #define CLIMIT_VERIFY_TOLERANCE_A 0.01f
 
@@ -42,6 +47,10 @@ static esp_timer_handle_t long_press_timer;
 // static esp_timer_handle_t shutdown_load_sw; // No longer needed
 
 static TaskHandle_t shutdown_task_handle = NULL; // Global task handle
+static TaskHandle_t warning_task_handle = NULL;
+static volatile uint16_t pending_critical_flags = 0;
+static volatile uint16_t pending_warning_flags = 0;
+static uint16_t last_warning_flags = 0;
 
 ina3221_t ina3221 = {
     .shunt = {10, 10, 10},
@@ -96,6 +105,23 @@ static esp_err_t ina3221_read_reg16(uint8_t reg, uint16_t* val)
     return ESP_OK;
 }
 
+static void notify_alert_tasks(uint16_t cf, uint16_t wf)
+{
+    if (cf)
+    {
+        pending_critical_flags |= cf;
+        if (shutdown_task_handle != NULL)
+            xTaskNotifyGive(shutdown_task_handle);
+    }
+
+    if (wf)
+    {
+        pending_warning_flags |= wf;
+        if (warning_task_handle != NULL)
+            xTaskNotifyGive(warning_task_handle);
+    }
+}
+
 static float climit_raw_to_a(ina3221_channel_t channel, uint16_t raw)
 {
     int16_t signed_raw = (int16_t)raw;
@@ -103,10 +129,10 @@ static float climit_raw_to_a(ina3221_channel_t channel, uint16_t raw)
     return current_ma / 1000.0f;
 }
 
-static esp_err_t climit_get_channel(ina3221_channel_t channel, float* limit_a, uint16_t* raw)
+static esp_err_t climit_get_channel_reg(ina3221_channel_t channel, uint8_t base_reg, float* limit_a, uint16_t* raw)
 {
     uint16_t raw_value;
-    esp_err_t err = ina3221_read_reg16(INA3221_REG_CRITICAL_ALERT_1 + channel * 2, &raw_value);
+    esp_err_t err = ina3221_read_reg16(base_reg + channel * 2, &raw_value);
     if (err != ESP_OK)
         return err;
 
@@ -118,30 +144,51 @@ static esp_err_t climit_get_channel(ina3221_channel_t channel, float* limit_a, u
     return ESP_OK;
 }
 
-static esp_err_t climit_set_channel(const char* name, ina3221_channel_t channel, double value)
+static esp_err_t climit_get_channel(ina3221_channel_t channel, float* limit_a, uint16_t* raw)
+{
+    return climit_get_channel_reg(channel, INA3221_REG_WARNING_ALERT_1, limit_a, raw);
+}
+
+static esp_err_t climit_get_critical_channel(ina3221_channel_t channel, float* limit_a, uint16_t* raw)
+{
+    return climit_get_channel_reg(channel, INA3221_REG_CRITICAL_ALERT_1, limit_a, raw);
+}
+
+static esp_err_t climit_set_channel(const char* name, const char* label, ina3221_channel_t channel, double value,
+                                    bool allow_disable)
 {
     float requested_limit_a = (float)value;
+    if (!allow_disable && requested_limit_a < CRITICAL_CURRENT_LIMIT_MIN)
+    {
+        ESP_LOGW(TAG, "%s %s request rejected: requested=%.3fA", name, label, requested_limit_a);
+        push_eventf(EV_WARNING, "%s %s request rejected: requested=%.3fA", name, label, requested_limit_a);
+        return ESP_ERR_INVALID_ARG;
+    }
+
     float applied_limit_a = requested_limit_a > 0.0f ? requested_limit_a : CLIMIT_DISABLED_LIMIT_A;
     float applied_limit_ma = applied_limit_a * 1000.0f;
+    bool is_critical = !strcmp(label, "critical current limit");
 
-    ESP_LOGI(TAG, "Setting %s current limit to: %fmA", name, requested_limit_a * 1000.0f);
-    push_eventf(EV_INFO, "Setting %s current limit to: %fmA", name, requested_limit_a * 1000.0f);
+    ESP_LOGI(TAG, "Setting %s %s to: %fmA", name, label, requested_limit_a * 1000.0f);
+    push_eventf(EV_INFO, "Setting %s %s to: %fmA", name, label, requested_limit_a * 1000.0f);
 
-    esp_err_t err = ina3221_set_critical_alert(&ina3221, channel, applied_limit_ma);
+    esp_err_t err = is_critical ? ina3221_set_critical_alert(&ina3221, channel, applied_limit_ma)
+                                : ina3221_set_warning_alert(&ina3221, channel, applied_limit_ma);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to write %s current limit: %s", name, esp_err_to_name(err));
-        push_eventf(EV_WARNING, "%s current limit set failed: requested=%.3fA, applied=%.3fA, error=%s", name,
+        ESP_LOGE(TAG, "Failed to write %s %s: %s", name, label, esp_err_to_name(err));
+        push_eventf(EV_WARNING, "%s %s set failed: requested=%.3fA, applied=%.3fA, error=%s", name, label,
                     requested_limit_a, applied_limit_a, esp_err_to_name(err));
         return err;
     }
 
     float readback_limit_a;
-    err = climit_get_channel(channel, &readback_limit_a, NULL);
+    err = is_critical ? climit_get_critical_channel(channel, &readback_limit_a, NULL)
+                      : climit_get_channel(channel, &readback_limit_a, NULL);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "Failed to read back %s current limit: %s", name, esp_err_to_name(err));
-        push_eventf(EV_WARNING, "%s current limit readback failed: requested=%.3fA, applied=%.3fA, error=%s", name,
+        ESP_LOGE(TAG, "Failed to read back %s %s: %s", name, label, esp_err_to_name(err));
+        push_eventf(EV_WARNING, "%s %s readback failed: requested=%.3fA, applied=%.3fA, error=%s", name, label,
                     requested_limit_a, applied_limit_a, esp_err_to_name(err));
         return err;
     }
@@ -150,18 +197,25 @@ static esp_err_t climit_set_channel(const char* name, ina3221_channel_t channel,
     if (diff < 0.0f)
         diff = -diff;
 
-    ESP_LOGI(TAG, "%s current limit set: applied=%.3fA, requested=%.3fA", name, readback_limit_a,
-             requested_limit_a);
-    push_eventf(EV_INFO, "%s current limit set: applied=%.3fA, requested=%.3fA", name, readback_limit_a,
+    ESP_LOGI(TAG, "%s %s set: applied=%.3fA, requested=%.3fA", name, label, readback_limit_a, requested_limit_a);
+    push_eventf(EV_INFO, "%s %s set: applied=%.3fA, requested=%.3fA", name, label, readback_limit_a,
                 requested_limit_a);
 
     if (diff > CLIMIT_VERIFY_TOLERANCE_A)
     {
-        ESP_LOGE(TAG, "%s current limit readback mismatch: expected=%.3fA, actual=%.3fA", name, applied_limit_a,
+        ESP_LOGE(TAG, "%s %s readback mismatch: expected=%.3fA, actual=%.3fA", name, label, applied_limit_a,
                  readback_limit_a);
-        push_eventf(EV_WARNING, "%s current limit readback mismatch: expected=%.3fA, actual=%.3fA", name,
+        push_eventf(EV_WARNING, "%s %s readback mismatch: expected=%.3fA, actual=%.3fA", name, label,
                     applied_limit_a, readback_limit_a);
         return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    uint16_t mask_raw = 0;
+    esp_err_t mask_err = ina3221_read_reg16(INA3221_REG_MASK, &mask_raw);
+    if (mask_err == ESP_OK)
+    {
+        ESP_LOGI(TAG, "%s %s status: critical_gpio=%d warning_gpio=%d mask=0x%04x", name, label,
+                 gpio_get_level(PM_INT_CRITICAL), gpio_get_level(PM_INT_WARNING), mask_raw);
     }
 
     return ESP_OK;
@@ -198,7 +252,7 @@ static void push_critical_fault_details(uint16_t cf)
         float limit_a = 0.0f;
         uint16_t raw_limit = 0;
         esp_err_t sample_err = read_channel_snapshot(channel, &voltage, &current_a);
-        esp_err_t limit_err = climit_get_channel(channel->channel, &limit_a, &raw_limit);
+        esp_err_t limit_err = climit_get_critical_channel(channel->channel, &limit_a, &raw_limit);
 
         if (sample_err == ESP_OK && limit_err == ESP_OK)
         {
@@ -221,6 +275,103 @@ static void push_critical_fault_details(uint16_t cf)
         ESP_LOGW(TAG, "critical input asserted without INA3221 channel flag");
         push_eventf(EV_CRITICAL, "critical input asserted without INA3221 channel flag");
     }
+}
+
+static void push_warning_fault_details(uint16_t wf)
+{
+    ESP_LOGW(TAG, "warning fault summary: wf=0x%x int_gpio=%d", wf, gpio_get_level(PM_INT_WARNING));
+
+    bool any_channel_fault = false;
+    for (size_t i = 0; i < sizeof(monitor_channels) / sizeof(monitor_channels[0]); ++i)
+    {
+        const monitor_channel_t* channel = &monitor_channels[i];
+        bool flagged = (wf & channel->cf_bit) != 0;
+        any_channel_fault = any_channel_fault || flagged;
+
+        float voltage = 0.0f;
+        float current_a = 0.0f;
+        float limit_a = 0.0f;
+        uint16_t raw_limit = 0;
+        esp_err_t sample_err = read_channel_snapshot(channel, &voltage, &current_a);
+        esp_err_t limit_err = climit_get_channel(channel->channel, &limit_a, &raw_limit);
+
+        if (sample_err == ESP_OK && limit_err == ESP_OK)
+        {
+            ESP_LOGW(TAG, "warning detail: %s flagged=%d current=%.3fA voltage=%.3fV limit=%.3fA raw=0x%04x",
+                     channel->name, flagged, current_a, voltage, limit_a, raw_limit);
+            push_eventf(EV_WARNING, "warning detail: %s current=%.3fA voltage=%.3fV limit=%.3fA", channel->name,
+                        current_a, voltage, limit_a);
+        }
+        else
+        {
+            ESP_LOGW(TAG, "warning detail: %s read failed: sample=%s, limit=%s", channel->name,
+                     esp_err_to_name(sample_err), esp_err_to_name(limit_err));
+            push_eventf(EV_WARNING, "warning detail: %s read failed: sample=%s, limit=%s", channel->name,
+                        esp_err_to_name(sample_err), esp_err_to_name(limit_err));
+        }
+    }
+
+    if (!any_channel_fault)
+    {
+        ESP_LOGW(TAG, "warning input asserted without INA3221 channel flag");
+        push_eventf(EV_WARNING, "warning input asserted without INA3221 channel flag");
+    }
+}
+
+static void disable_warning_fault_load_switches(uint16_t wf)
+{
+    if (wf & BIT0) // CH3 VIN input warning protects all downstream outputs.
+    {
+        ESP_LOGW(TAG, "warning action: VIN limit exceeded, disabling all load switches");
+        push_eventf(EV_WARNING, "warning action: VIN limit exceeded, disabling all load switches");
+        esp_err_t err = set_load_switches(false, false);
+        if (err != ESP_OK)
+            ESP_LOGW(TAG, "warning action failed: all=%s", esp_err_to_name(err));
+        return;
+    }
+
+    if (wf & BIT1) // CH2 MAIN
+    {
+        ESP_LOGW(TAG, "warning action: MAIN limit exceeded, disabling MAIN load switch");
+        push_eventf(EV_WARNING, "warning action: MAIN limit exceeded, disabling MAIN load switch");
+        esp_err_t err = set_main_load_switch(false);
+        if (err != ESP_OK)
+            ESP_LOGW(TAG, "warning action failed: main=%s", esp_err_to_name(err));
+    }
+
+    if (wf & BIT2) // CH1 USB
+    {
+        ESP_LOGW(TAG, "warning action: USB limit exceeded, disabling USB load switch");
+        push_eventf(EV_WARNING, "warning action: USB limit exceeded, disabling USB load switch");
+        esp_err_t err = set_usb_load_switch(false);
+        if (err != ESP_OK)
+            ESP_LOGW(TAG, "warning action failed: usb=%s", esp_err_to_name(err));
+    }
+}
+
+static uint16_t take_pending_flags(volatile uint16_t* flags)
+{
+    uint16_t value = *flags;
+    *flags = 0;
+    return value;
+}
+
+static double clamp_current_limit(double value, double max_value)
+{
+    if (value < 0.0)
+        return 0.0;
+    if (value > max_value)
+        return max_value;
+    return value;
+}
+
+static double clamp_critical_current_limit(double value, double max_value)
+{
+    if (value < CRITICAL_CURRENT_LIMIT_MIN)
+        return CRITICAL_CURRENT_LIMIT_MIN;
+    if (value > max_value)
+        return max_value;
+    return value;
 }
 
 static void sensor_timer_callback(void* arg)
@@ -325,11 +476,13 @@ static void shutdown_load_sw_task(void* pvParameters)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         ESP_LOGW(TAG, "critical interrupt triggered (via task)");
+        uint16_t cf = take_pending_flags(&pending_critical_flags);
         esp_err_t status_err = ina3221_get_status(&ina3221);
-        uint16_t cf = status_err == ESP_OK ? ina3221.mask.cf : 0; // BIT2=IN1/USB, BIT1=IN2/MAIN, BIT0=IN3/VIN
 
         if (status_err == ESP_OK)
         {
+            cf |= ina3221.mask.cf; // BIT2=IN1/USB, BIT1=IN2/MAIN, BIT0=IN3/VIN
+            notify_alert_tasks(0, ina3221.mask.wf);
             push_critical_fault_details(cf);
         }
         else
@@ -359,6 +512,42 @@ static void shutdown_load_sw_task(void* pvParameters)
     }
 }
 
+static void warning_alert_task(void* pvParameters)
+{
+    while (1)
+    {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        ESP_LOGW(TAG, "warning interrupt triggered (via task)");
+        uint16_t wf = take_pending_flags(&pending_warning_flags);
+        esp_err_t status_err = ina3221_get_status(&ina3221);
+
+        if (status_err == ESP_OK)
+        {
+            wf |= ina3221.mask.wf;
+            notify_alert_tasks(ina3221.mask.cf, 0);
+            if (wf)
+            {
+                push_warning_fault_details(wf);
+                disable_warning_fault_load_switches(wf);
+                last_warning_flags = wf;
+            }
+            else if (last_warning_flags && gpio_get_level(PM_INT_WARNING) != 0)
+            {
+                ESP_LOGW(TAG, "warning cleared: previous_wf=0x%x int_gpio=%d", last_warning_flags,
+                         gpio_get_level(PM_INT_WARNING));
+                push_eventf(EV_WARNING, "warning cleared");
+                last_warning_flags = 0;
+            }
+        }
+        else
+        {
+            ESP_LOGW(TAG, "failed to read INA3221 status on warning interrupt: %s", esp_err_to_name(status_err));
+            push_eventf(EV_WARNING, "warning fault: INA3221 status read failed: %s", esp_err_to_name(status_err));
+        }
+    }
+}
+
 static void IRAM_ATTR critical_isr_handler(void* arg)
 {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
@@ -377,13 +566,30 @@ static void IRAM_ATTR critical_isr_handler(void* arg)
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
+static void IRAM_ATTR warning_isr_handler(void* arg)
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    if (warning_task_handle != NULL)
+    {
+        vTaskNotifyGiveFromISR(warning_task_handle, &xHigherPriorityTaskWoken);
+    }
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+}
+
 static void gpio_init()
 {
     // critical int
     gpio_set_intr_type(PM_INT_CRITICAL, GPIO_INTR_ANYEDGE);
     gpio_set_direction(PM_INT_CRITICAL, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(PM_INT_CRITICAL, GPIO_PULLUP_ONLY);
     gpio_install_isr_service(0);
     gpio_isr_handler_add(PM_INT_CRITICAL, critical_isr_handler, (void*)PM_INT_CRITICAL);
+
+    // warning int
+    gpio_set_intr_type(PM_INT_WARNING, GPIO_INTR_ANYEDGE);
+    gpio_set_direction(PM_INT_WARNING, GPIO_MODE_INPUT);
+    gpio_set_pull_mode(PM_INT_WARNING, GPIO_PULLUP_ONLY);
+    gpio_isr_handler_add(PM_INT_WARNING, warning_isr_handler, (void*)PM_INT_WARNING);
 
     // rst expander
     gpio_set_level(PM_EXPANDER_RST, 1);
@@ -392,17 +598,32 @@ static void gpio_init()
 
 esp_err_t climit_set_vin(double value)
 {
-    return climit_set_channel("VIN", CHANNEL_VIN, value);
+    return climit_set_channel("VIN", "current limit", CHANNEL_VIN, value, true);
 }
 
 esp_err_t climit_set_main(double value)
 {
-    return climit_set_channel("MAIN", CHANNEL_MAIN, value);
+    return climit_set_channel("MAIN", "current limit", CHANNEL_MAIN, value, true);
 }
 
 esp_err_t climit_set_usb(double value)
 {
-    return climit_set_channel("USB", CHANNEL_USB, value);
+    return climit_set_channel("USB", "current limit", CHANNEL_USB, value, true);
+}
+
+esp_err_t climit_set_critical_vin(double value)
+{
+    return climit_set_channel("VIN", "critical current limit", CHANNEL_VIN, value, false);
+}
+
+esp_err_t climit_set_critical_main(double value)
+{
+    return climit_set_channel("MAIN", "critical current limit", CHANNEL_MAIN, value, false);
+}
+
+esp_err_t climit_set_critical_usb(double value)
+{
+    return climit_set_channel("USB", "critical current limit", CHANNEL_USB, value, false);
 }
 
 esp_err_t climit_get_vin(float* limit_a, uint16_t* raw)
@@ -420,6 +641,21 @@ esp_err_t climit_get_usb(float* limit_a, uint16_t* raw)
     return climit_get_channel(CHANNEL_USB, limit_a, raw);
 }
 
+esp_err_t climit_get_critical_vin(float* limit_a, uint16_t* raw)
+{
+    return climit_get_critical_channel(CHANNEL_VIN, limit_a, raw);
+}
+
+esp_err_t climit_get_critical_main(float* limit_a, uint16_t* raw)
+{
+    return climit_get_critical_channel(CHANNEL_MAIN, limit_a, raw);
+}
+
+esp_err_t climit_get_critical_usb(float* limit_a, uint16_t* raw)
+{
+    return climit_get_critical_channel(CHANNEL_USB, limit_a, raw);
+}
+
 void init_status_monitor()
 {
     gpio_init();
@@ -427,19 +663,28 @@ void init_status_monitor()
     ESP_ERROR_CHECK(ina3221_sync(&ina3221));
 
     double lim;
-    char buf[10];
+    char buf[16];
 
     nconfig_read(VIN_CURRENT_LIMIT, buf, sizeof(buf));
-    lim = atof(buf);
+    lim = clamp_current_limit(atof(buf), VIN_CURRENT_LIMIT_MAX);
     climit_set_vin(lim);
+    nconfig_read(VIN_CRITICAL_CURRENT_LIMIT, buf, sizeof(buf));
+    lim = clamp_critical_current_limit(atof(buf), VIN_CRITICAL_CURRENT_LIMIT_MAX);
+    climit_set_critical_vin(lim);
 
     nconfig_read(MAIN_CURRENT_LIMIT, buf, sizeof(buf));
-    lim = atof(buf);
+    lim = clamp_current_limit(atof(buf), MAIN_CURRENT_LIMIT_MAX);
     climit_set_main(lim);
+    nconfig_read(MAIN_CRITICAL_CURRENT_LIMIT, buf, sizeof(buf));
+    lim = clamp_critical_current_limit(atof(buf), MAIN_CRITICAL_CURRENT_LIMIT_MAX);
+    climit_set_critical_main(lim);
 
     nconfig_read(USB_CURRENT_LIMIT, buf, sizeof(buf));
-    lim = atof(buf);
+    lim = clamp_current_limit(atof(buf), USB_CURRENT_LIMIT_MAX);
     climit_set_usb(lim);
+    nconfig_read(USB_CRITICAL_CURRENT_LIMIT, buf, sizeof(buf));
+    lim = clamp_critical_current_limit(atof(buf), USB_CRITICAL_CURRENT_LIMIT_MAX);
+    climit_set_critical_usb(lim);
 
     const esp_timer_create_args_t sensor_timer_args = {.callback = &sensor_timer_callback,
                                                        .name = "sensor_reading_timer"};
@@ -453,6 +698,10 @@ void init_status_monitor()
 
     xTaskCreate(shutdown_load_sw_task, "shutdown_sw_task", configMINIMAL_STACK_SIZE * 3, NULL, 15,
                 &shutdown_task_handle);
+    xTaskCreate(warning_alert_task, "warning_alert_task", configMINIMAL_STACK_SIZE * 3, NULL, 10,
+                &warning_task_handle);
+    if (gpio_get_level(PM_INT_WARNING) == 0 && warning_task_handle != NULL)
+        xTaskNotifyGive(warning_task_handle);
 
     nconfig_read(SENSOR_PERIOD_MS, buf, sizeof(buf));
     ESP_ERROR_CHECK(esp_timer_start_periodic(sensor_timer, strtol(buf, NULL, 10) * 1000));
