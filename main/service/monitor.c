@@ -495,6 +495,9 @@ static void shutdown_load_sw_task(void* pvParameters)
         vTaskDelay(100 / portTICK_PERIOD_MS);
         gpio_set_level(PM_EXPANDER_RST, 1);
         config_sw();
+        esp_err_t persist_err = persist_load_switch_state();
+        if (persist_err != ESP_OK)
+            ESP_LOGW(TAG, "failed to save disabled load switch state: %s", esp_err_to_name(persist_err));
 
         push_eventf(EV_CRITICAL, "load switch disabled");
 

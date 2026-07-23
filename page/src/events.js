@@ -225,6 +225,7 @@ export function setupEventListeners() {
     dom.apModeApplyButton.addEventListener('click', ui.applyApModeSettings);
     dom.baudRateApplyButton.addEventListener('click', ui.applyBaudRateSettings);
     dom.periodApplyButton.addEventListener('click', ui.applyPeriodSettings);
+    dom.restoreOutputStateApplyButton.addEventListener('click', ui.applyRestoreOutputStateSetting);
 
     // --- Device Settings (Reboot & Period Slider) ---
     if (dom.rebootButton) {

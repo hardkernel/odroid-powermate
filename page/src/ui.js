@@ -356,6 +356,25 @@ export async function applyPeriodSettings() {
 }
 
 /**
+ * Applies the output state restore setting.
+ */
+export async function applyRestoreOutputStateSetting() {
+    const enabled = dom.restoreOutputStateToggle.checked;
+    dom.restoreOutputStateApplyButton.disabled = true;
+    dom.restoreOutputStateApplyButton.innerHTML =
+        `<span class="spinner-border spinner-border-sm" aria-hidden="true"></span> Applying...`;
+
+    try {
+        await api.postRestoreOutputStateSetting(enabled);
+    } catch (error) {
+        console.error('Error applying output state restore setting:', error);
+    } finally {
+        dom.restoreOutputStateApplyButton.disabled = false;
+        dom.restoreOutputStateApplyButton.innerHTML = 'Apply';
+    }
+}
+
+/**
  * Fetches and displays the current network and device settings in the settings modal.
  */
 export async function initializeSettings() {
@@ -396,6 +415,7 @@ export async function initializeSettings() {
             dom.periodSlider.value = data.period;
             dom.periodValue.textContent = data.period;
         }
+        dom.restoreOutputStateToggle.checked = data.restore_output_state === true;
 
     } catch (error) {
         console.error('Error initializing settings:', error);

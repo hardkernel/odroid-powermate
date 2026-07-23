@@ -34,6 +34,8 @@ const static char* keys[NCONFIG_TYPE_MAX] = {
     [PAGE_USERNAME] = "username",
     [PAGE_PASSWORD] = "password",
     [SENSOR_PERIOD_MS] = "sensor_period",
+    [RESTORE_OUTPUT_STATE] = "restore_vout",
+    [OUTPUT_STATE] = "vout_state",
 };
 
 struct default_value
@@ -62,6 +64,8 @@ struct default_value const default_values[] = {
     {PAGE_USERNAME, "admin"},
     {PAGE_PASSWORD, "password"},
     {SENSOR_PERIOD_MS, "1000"},
+    {RESTORE_OUTPUT_STATE, "false"},
+    {OUTPUT_STATE, "00"},
 };
 
 esp_err_t init_nconfig()
@@ -98,9 +102,21 @@ bool nconfig_value_is_not_set(enum nconfig_type type)
     return (err != ESP_OK || len <= 1);
 }
 
-esp_err_t nconfig_write(enum nconfig_type type, const char* data) { return nvs_set_str(handle, keys[type], data); }
+esp_err_t nconfig_write(enum nconfig_type type, const char* data)
+{
+    esp_err_t err = nvs_set_str(handle, keys[type], data);
+    if (err != ESP_OK)
+        return err;
+    return nvs_commit(handle);
+}
 
-esp_err_t nconfig_delete(enum nconfig_type type) { return nvs_erase_key(handle, keys[type]); }
+esp_err_t nconfig_delete(enum nconfig_type type)
+{
+    esp_err_t err = nvs_erase_key(handle, keys[type]);
+    if (err != ESP_OK)
+        return err;
+    return nvs_commit(handle);
+}
 
 esp_err_t nconfig_get_str_len(enum nconfig_type type, size_t* len)
 {

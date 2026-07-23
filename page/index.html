@@ -448,6 +448,24 @@
                                 <button type="button" class="btn btn-primary btn-sm" id="period-apply-button">Apply</button>
                             </div>
                         </div>
+                        <div class="mb-3 p-3 border rounded">
+                            <div class="form-check form-switch d-flex align-items-center justify-content-between ps-0">
+                                <label class="form-check-label" for="restore-output-state-toggle">
+                                    Restore VOUT State After Power Loss
+                                </label>
+                                <input class="form-check-input float-none ms-2" id="restore-output-state-toggle"
+                                       role="switch" type="checkbox">
+                            </div>
+                            <p class="text-muted small mb-2">
+                                Restore the last MAIN and USB output states when DC input power returns.
+                                Outputs that were previously enabled may turn on automatically.
+                            </p>
+                            <div class="d-flex justify-content-end">
+                                <button class="btn btn-primary btn-sm" id="restore-output-state-apply-button"
+                                        type="button">Apply
+                                </button>
+                            </div>
+                        </div>
                         <hr>
                         <div class="mb-3">
                             <label class="form-label">System Reboot</label>

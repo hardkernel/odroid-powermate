@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "event.h"
+#include "nconfig.h"
 #include "pb.h"
 #include "pb_encode.h"
 #include "pca9557.h"
@@ -47,6 +48,64 @@ static i2c_dev_t pca = {0};
 
 static esp_timer_handle_t power_trigger_timer;
 static esp_timer_handle_t reset_trigger_timer;
+
+bool get_restore_output_state()
+{
+    char value[6];
+    return nconfig_read(RESTORE_OUTPUT_STATE, value, sizeof(value)) == ESP_OK && strcmp(value, "true") == 0;
+}
+
+esp_err_t persist_load_switch_state()
+{
+    if (!get_restore_output_state())
+        return ESP_OK;
+
+    char state[] = {
+        load_switch_12v_status ? '1' : '0',
+        load_switch_5v_status ? '1' : '0',
+        '\0',
+    };
+    return nconfig_write(OUTPUT_STATE, state);
+}
+
+esp_err_t set_restore_output_state(bool enabled)
+{
+    if (enabled)
+    {
+        char state[] = {
+            load_switch_12v_status ? '1' : '0',
+            load_switch_5v_status ? '1' : '0',
+            '\0',
+        };
+        esp_err_t err = nconfig_write(OUTPUT_STATE, state);
+        if (err != ESP_OK)
+            return err;
+    }
+
+    return nconfig_write(RESTORE_OUTPUT_STATE, enabled ? "true" : "false");
+}
+
+static void restore_load_switch_state()
+{
+    if (!get_restore_output_state())
+        return;
+
+    char state[3];
+    esp_err_t err = nconfig_read(OUTPUT_STATE, state, sizeof(state));
+    if (err != ESP_OK || strlen(state) != 2 ||
+        (state[0] != '0' && state[0] != '1') || (state[1] != '0' && state[1] != '1'))
+    {
+        ESP_LOGW(TAG, "Failed to read saved load switch state");
+        return;
+    }
+
+    err = set_load_switches(state[0] == '1', state[1] == '1');
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "Failed to restore load switch state: %s", esp_err_to_name(err));
+    else
+        ESP_LOGI(TAG, "Restored load switches: main=%s usb=%s",
+                 state[0] == '1' ? "on" : "off", state[1] == '1' ? "on" : "off");
+}
 
 static void send_sw_status_message()
 {
@@ -123,6 +182,12 @@ esp_err_t set_load_switches(bool main_on, bool usb_on)
 
     load_switch_12v_status = main_on;
     load_switch_5v_status = usb_on;
+    esp_err_t persist_err = persist_load_switch_state();
+    if (persist_err != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to save load switch state: %s", esp_err_to_name(persist_err));
+        push_eventf(EV_WARNING, "failed to save load switch state: %s", esp_err_to_name(persist_err));
+    }
     push_eventf(EV_INFO, "load switches set: main=%s usb=%s", main_on ? "on" : "off", usb_on ? "on" : "off");
     send_sw_status_message();
     return ESP_OK;
@@ -158,7 +223,11 @@ void init_sw()
 {
     ESP_ERROR_CHECK(pca9557_init_desc(&pca, 0x18, I2C_PORT, GPIO_SDA, GPIO_SCL));
 
+    expander_mutex = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(expander_mutex ? ESP_OK : ESP_ERR_NO_MEM);
+
     config_sw();
+    restore_load_switch_state();
 
     const esp_timer_create_args_t power_timer_args = {
         .callback = &trigger_off_callback, .arg = (void*)GPIO_PWR, .name = "power_trigger_off"};
@@ -167,8 +236,6 @@ void init_sw()
     const esp_timer_create_args_t reset_timer_args = {
         .callback = &trigger_off_callback, .arg = (void*)GPIO_RST, .name = "power_trigger_off"};
     ESP_ERROR_CHECK(esp_timer_create(&reset_timer_args, &reset_trigger_timer));
-
-    expander_mutex = xSemaphoreCreateMutex();
 }
 
 void trig_power()

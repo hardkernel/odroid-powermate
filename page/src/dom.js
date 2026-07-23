@@ -83,6 +83,8 @@ export const baudRateApplyButton = document.getElementById('baud-rate-apply-butt
 export const periodSlider = document.getElementById('period-slider');
 export const periodValue = document.getElementById('period-value');
 export const periodApplyButton = document.getElementById('period-apply-button');
+export const restoreOutputStateToggle = document.getElementById('restore-output-state-toggle');
+export const restoreOutputStateApplyButton = document.getElementById('restore-output-state-apply-button');
 export const rebootButton = document.getElementById('reboot-button');
 
 // --- Current Limit Settings Elements ---

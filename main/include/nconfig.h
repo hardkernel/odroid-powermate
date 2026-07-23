@@ -48,6 +48,8 @@ enum nconfig_type
     PAGE_USERNAME, ///< Webpage username
     PAGE_PASSWORD, ///< Webpage password
     SENSOR_PERIOD_MS, ///< Sensor period
+    RESTORE_OUTPUT_STATE, ///< Restore the last MAIN/USB output state after power loss.
+    OUTPUT_STATE, ///< Last MAIN/USB output state.
     NCONFIG_TYPE_MAX,   ///< Sentinel for the maximum number of configuration types.
 };
 

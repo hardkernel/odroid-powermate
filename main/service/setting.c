@@ -12,6 +12,7 @@
 #include "esp_timer.h"
 #include "monitor.h"
 #include "nconfig.h"
+#include "sw.h"
 #include "webserver.h"
 #include "wifi.h"
 
@@ -206,6 +207,8 @@ static esp_err_t setting_get_handler(httpd_req_t* req)
         cJSON_AddStringToObject(root, "period", buf);
     }
 
+    cJSON_AddBoolToObject(root, "restore_output_state", get_restore_output_state());
+
     // Add current limits to the response
     if (nconfig_read(VIN_CURRENT_LIMIT, buf, sizeof(buf)) == ESP_OK)
     {
@@ -352,6 +355,7 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
     cJSON* ssid_item = cJSON_GetObjectItem(root, "ssid");
     cJSON* baud_item = cJSON_GetObjectItem(root, "baudrate");
     cJSON* period_item = cJSON_GetObjectItem(root, "period");
+    cJSON* restore_output_state_item = cJSON_GetObjectItem(root, "restore_output_state");
     cJSON* vin_climit_item = cJSON_GetObjectItem(root, "vin_current_limit");
     cJSON* main_climit_item = cJSON_GetObjectItem(root, "main_current_limit");
     cJSON* usb_climit_item = cJSON_GetObjectItem(root, "usb_current_limit");
@@ -471,6 +475,31 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
         update_sensor_period(strtol(period_str, NULL, 10));
         cJSON_AddStringToObject(resp_root, "period_status", "updated");
         action_taken = true;
+    }
+
+    if (restore_output_state_item)
+    {
+        action_taken = true;
+        if (!cJSON_IsBool(restore_output_state_item))
+        {
+            cJSON_AddStringToObject(resp_root, "restore_output_state_status", "invalid");
+            cJSON_AddStringToObject(resp_root, "status", "error");
+        }
+        else
+        {
+            bool enabled = cJSON_IsTrue(restore_output_state_item);
+            err = set_restore_output_state(enabled);
+            if (err == ESP_OK)
+            {
+                cJSON_AddStringToObject(resp_root, "restore_output_state_status", "updated");
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Failed to save output state restore setting: %s", esp_err_to_name(err));
+                cJSON_AddStringToObject(resp_root, "restore_output_state_status", esp_err_to_name(err));
+                cJSON_AddStringToObject(resp_root, "status", "error");
+            }
+        }
     }
 
     if (vin_climit_item || main_climit_item || usb_climit_item || vin_critical_climit_item ||

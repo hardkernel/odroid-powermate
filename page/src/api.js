@@ -135,6 +135,23 @@ export async function postPeriodSetting(period) {
 }
 
 /**
+ * Enables or disables restoring the last output states after input power loss.
+ * @param {boolean} enabled Whether output state restoration should be enabled.
+ * @returns {Promise<Response>} A promise that resolves to the raw fetch response.
+ */
+export async function postRestoreOutputStateSetting(enabled) {
+    const response = await fetch('/api/setting', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders(),
+        },
+        body: JSON.stringify({restore_output_state: enabled}),
+    });
+    return await handleResponse(response);
+}
+
+/**
  * Fetches the current network settings and Wi-Fi status from the server.
  * @returns {Promise<Object>} A promise that resolves to an object containing the current settings.
  * @throws {Error} Throws an error if the network request fails.
