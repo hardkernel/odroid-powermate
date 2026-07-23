@@ -98,6 +98,9 @@ export const usbSlider = document.getElementById('usb-current-limit-slider');
 export const usbValueSpan = document.getElementById('usb-current-limit-value');
 export const usbCriticalSlider = document.getElementById('usb-critical-current-limit-slider');
 export const usbCriticalValueSpan = document.getElementById('usb-critical-current-limit-value');
+export const recommendedCurrentLimitWarning = document.getElementById('recommended-current-limit-warning');
+export const recommendedCurrentLimitWarningMessage =
+    document.getElementById('recommended-current-limit-warning-message');
 export const currentLimitApplyButton = document.getElementById('current-limit-apply-button');
 
 // --- Footer ---

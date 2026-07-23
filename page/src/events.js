@@ -17,6 +17,11 @@ let chartsInitialized = false;
 let listenersAttached = false;
 let powerControlRequestInFlight = false;
 const CURRENT_LIMIT_STEP_A = 0.1;
+const RECOMMENDED_CURRENT_LIMITS_A = {
+    VIN: 9.0,
+    MAIN: 7.0,
+    USB: 4.0,
+};
 
 // --- Helper functions for settings ---
 
@@ -40,6 +45,35 @@ function sliderMax(slider) {
 
 function setSliderValue(slider, value) {
     slider.value = roundToStep(value).toFixed(1);
+}
+
+function updateRecommendedCurrentLimitWarning() {
+    if (!dom.recommendedCurrentLimitWarning || !dom.recommendedCurrentLimitWarningMessage) return;
+
+    const limits = [
+        ['VIN', dom.vinSlider, RECOMMENDED_CURRENT_LIMITS_A.VIN],
+        ['MAIN', dom.mainSlider, RECOMMENDED_CURRENT_LIMITS_A.MAIN],
+        ['USB', dom.usbSlider, RECOMMENDED_CURRENT_LIMITS_A.USB],
+    ];
+    const disabled = limits
+        .filter(([, slider]) => parseFloat(slider.value) === 0)
+        .map(([name]) => name);
+    const exceeded = limits
+        .filter(([, slider, recommended]) => parseFloat(slider.value) >= recommended)
+        .map(([name, , recommended]) => `${name} \u2265 ${recommended.toFixed(1)} A`);
+    const messages = [];
+
+    if (disabled.length > 0) {
+        messages.push(`Current-limit protection disabled: ${disabled.join(', ')}.`);
+    }
+    if (exceeded.length > 0) {
+        messages.push(`At or above recommended continuous limits: ${exceeded.join(', ')}. ` +
+            'Brief current peaks are tolerated, but sustained operation is not recommended.');
+    }
+
+    dom.recommendedCurrentLimitWarning.classList.toggle('d-none', messages.length === 0);
+    dom.recommendedCurrentLimitWarningMessage.textContent =
+        messages.join(' ');
 }
 
 function syncCurrentLimitPair(limitSlider, limitSpan, criticalSlider, criticalSpan, changedSlider = null) {
@@ -81,6 +115,7 @@ function syncCurrentLimitPair(limitSlider, limitSpan, criticalSlider, criticalSp
     setSliderValue(criticalSlider, critical);
     updateSliderValue(limitSlider, limitSpan);
     updateSliderValue(criticalSlider, criticalSpan);
+    updateRecommendedCurrentLimitWarning();
 }
 
 function syncAllCurrentLimitPairs(changedSlider = null) {
