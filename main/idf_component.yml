@@ -1,5 +1,6 @@
 dependencies:
-  espressif/led_indicator: ^1.1.1
+  espressif/led_indicator: ^2.1.2
   esp-idf-lib/ina3221: ^1.1.7
   esp-idf-lib/pca9557: ^1.0.7
   nikas-belogolov/nanopb: ^1.0.0
+  espressif/cjson: ^1.7.19~2
