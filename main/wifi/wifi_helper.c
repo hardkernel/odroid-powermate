@@ -36,10 +36,6 @@ const char* auth_mode_str(wifi_auth_mode_t mode)
         return "OWE";
     case WIFI_AUTH_WPA3_ENT_192:
         return "WPA3_ENT_192";
-    case WIFI_AUTH_WPA3_EXT_PSK:
-        return "WPA3_EXT_PSK";
-    case WIFI_AUTH_WPA3_EXT_PSK_MIXED_MODE:
-        return "WPA3_EXT_PSK_MIXED_MODE";
     case WIFI_AUTH_DPP:
         return "DPP";
     case WIFI_AUTH_WPA3_ENTERPRISE:
@@ -61,14 +57,14 @@ const char* wifi_reason_str(wifi_err_reason_t reason)
         return "AUTH_EXPIRE";
     case WIFI_REASON_AUTH_LEAVE:
         return "AUTH_LEAVE";
-    case WIFI_REASON_ASSOC_EXPIRE:
-        return "ASSOC_EXPIRE";
+    case WIFI_REASON_DISASSOC_DUE_TO_INACTIVITY:
+        return "DISASSOC_DUE_TO_INACTIVITY";
     case WIFI_REASON_ASSOC_TOOMANY:
         return "ASSOC_TOOMANY";
-    case WIFI_REASON_NOT_AUTHED:
-        return "NOT_AUTHED";
-    case WIFI_REASON_NOT_ASSOCED:
-        return "NOT_ASSOCED";
+    case WIFI_REASON_CLASS2_FRAME_FROM_NONAUTH_STA:
+        return "CLASS2_FRAME_FROM_NONAUTH_STA";
+    case WIFI_REASON_CLASS3_FRAME_FROM_NONASSOC_STA:
+        return "CLASS3_FRAME_FROM_NONASSOC_STA";
     case WIFI_REASON_ASSOC_LEAVE:
         return "ASSOC_LEAVE";
     case WIFI_REASON_ASSOC_NOT_AUTHED:
