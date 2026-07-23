@@ -4,7 +4,7 @@
 
 #include "indicator.h"
 
-#include <led_indicator.h>
+#include <led_indicator_ledc.h>
 
 #define LED_STATUS_GPIO CONFIG_GPIO_LED_STATUS
 #define LED_WIFI_GPIO CONFIG_GPIO_LED_WIFI
@@ -67,12 +67,10 @@ void init_led(void)
     ledc_config.gpio_num = LED_STATUS_GPIO;
     ledc_config.channel = LEDC_CHANNEL_0;
 
-    config.mode = LED_LEDC_MODE;
-    config.led_indicator_ledc_config = &ledc_config;
     config.blink_lists = led_mode;
     config.blink_list_num = BLINK_MAX;
 
-    led_handle[LED_RED] = led_indicator_create(&config);
+    led_indicator_new_ledc_device(&config, &ledc_config, &led_handle[LED_RED]);
 
     ledc_config.is_active_level_high = false;
     ledc_config.timer_inited = false;
@@ -80,12 +78,7 @@ void init_led(void)
     ledc_config.gpio_num = LED_WIFI_GPIO;
     ledc_config.channel = LEDC_CHANNEL_1;
 
-    config.mode = LED_LEDC_MODE;
-    config.led_indicator_ledc_config = &ledc_config;
-    config.blink_lists = led_mode;
-    config.blink_list_num = BLINK_MAX;
-
-    led_handle[LED_BLU] = led_indicator_create(&config);
+    led_indicator_new_ledc_device(&config, &ledc_config, &led_handle[LED_BLU]);
 }
 
 void led_set(enum blink_led led, enum blink_type type)
