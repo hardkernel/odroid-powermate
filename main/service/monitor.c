@@ -48,6 +48,7 @@ static esp_timer_handle_t long_press_timer;
 
 static TaskHandle_t shutdown_task_handle = NULL; // Global task handle
 static TaskHandle_t warning_task_handle = NULL;
+static volatile bool critical_cutoff_pending = false;
 static volatile uint16_t pending_critical_flags = 0;
 static volatile uint16_t pending_warning_flags = 0;
 static uint16_t last_warning_flags = 0;
@@ -236,44 +237,18 @@ static esp_err_t read_channel_snapshot(const monitor_channel_t* channel, float* 
     return ESP_OK;
 }
 
-static void push_critical_fault_details(uint16_t cf)
+static void push_critical_fault_sources(uint16_t cf)
 {
     ESP_LOGW(TAG, "critical fault summary: cf=0x%x int_gpio=%d", cf, gpio_get_level(PM_INT_CRITICAL));
 
-    bool any_channel_fault = false;
     for (size_t i = 0; i < sizeof(monitor_channels) / sizeof(monitor_channels[0]); ++i)
     {
         const monitor_channel_t* channel = &monitor_channels[i];
-        bool flagged = (cf & channel->cf_bit) != 0;
-        any_channel_fault = any_channel_fault || flagged;
-
-        float voltage = 0.0f;
-        float current_a = 0.0f;
-        float limit_a = 0.0f;
-        uint16_t raw_limit = 0;
-        esp_err_t sample_err = read_channel_snapshot(channel, &voltage, &current_a);
-        esp_err_t limit_err = climit_get_critical_channel(channel->channel, &limit_a, &raw_limit);
-
-        if (sample_err == ESP_OK && limit_err == ESP_OK)
+        if (cf & channel->cf_bit)
         {
-            ESP_LOGW(TAG, "critical detail: %s flagged=%d current=%.3fA voltage=%.3fV limit=%.3fA raw=0x%04x",
-                     channel->name, flagged, current_a, voltage, limit_a, raw_limit);
-            push_eventf(EV_CRITICAL, "critical detail: %s current=%.3fA voltage=%.3fV limit=%.3fA", channel->name,
-                        current_a, voltage, limit_a);
+            ESP_LOGW(TAG, "critical cutoff source: %s", channel->name);
+            push_eventf(EV_CRITICAL, "critical cutoff source: %s", channel->name);
         }
-        else
-        {
-            ESP_LOGW(TAG, "critical detail: %s read failed: sample=%s, limit=%s", channel->name,
-                     esp_err_to_name(sample_err), esp_err_to_name(limit_err));
-            push_eventf(EV_CRITICAL, "critical detail: %s read failed: sample=%s, limit=%s", channel->name,
-                        esp_err_to_name(sample_err), esp_err_to_name(limit_err));
-        }
-    }
-
-    if (!any_channel_fault)
-    {
-        ESP_LOGW(TAG, "critical input asserted without INA3221 channel flag");
-        push_eventf(EV_CRITICAL, "critical input asserted without INA3221 channel flag");
     }
 }
 
@@ -475,23 +450,37 @@ static void shutdown_load_sw_task(void* pvParameters)
         // Wait indefinitely for a notification from the ISR
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
+        // The critical ISR normally cuts the outputs first. Keep this as a
+        // fallback for alerts forwarded by another task or detected at startup.
+        gpio_set_level(PM_EXPANDER_RST, 0);
+
         ESP_LOGW(TAG, "critical interrupt triggered (via task)");
         uint16_t cf = take_pending_flags(&pending_critical_flags);
         esp_err_t status_err = ina3221_get_status(&ina3221);
+        bool button_pressed = false;
 
         if (status_err == ESP_OK)
         {
             cf |= ina3221.mask.cf; // BIT2=IN1/USB, BIT1=IN2/MAIN, BIT0=IN3/VIN
             notify_alert_tasks(0, ina3221.mask.wf);
-            push_critical_fault_details(cf);
+            if (cf)
+                push_critical_fault_sources(cf);
+            else
+            {
+                push_eventf(EV_CRITICAL, "critical cutoff source: BTN");
+                button_pressed = true;
+            }
         }
         else
         {
             ESP_LOGW(TAG, "failed to read INA3221 status on critical interrupt: %s", esp_err_to_name(status_err));
-            push_eventf(EV_CRITICAL, "critical fault: INA3221 status read failed: %s", esp_err_to_name(status_err));
+            if (cf)
+                push_critical_fault_sources(cf);
+            else
+                push_eventf(EV_CRITICAL, "critical cutoff source: unknown (INA3221 status read failed: %s)",
+                            esp_err_to_name(status_err));
         }
 
-        gpio_set_level(PM_EXPANDER_RST, 0);
         vTaskDelay(100 / portTICK_PERIOD_MS);
         gpio_set_level(PM_EXPANDER_RST, 1);
         config_sw();
@@ -501,17 +490,15 @@ static void shutdown_load_sw_task(void* pvParameters)
 
         push_eventf(EV_CRITICAL, "load switch disabled");
 
-        if (cf & BIT0) // CH3 VIN
-            push_eventf(EV_CRITICAL, "critical fault detected: VIN");
-        else if (cf & BIT1) // CH2 VOUT
-            push_eventf(EV_CRITICAL, "critical fault detected: MAIN");
-        else if (cf & BIT2) // CH1 USB
-            push_eventf(EV_CRITICAL, "critical fault detected: USB");
-        else
-            push_eventf(EV_CRITICAL, "critical fault detected: BTN");
-
-        // Start a 5-second timer to check for long press
-        esp_timer_start_once(long_press_timer, 5000000);
+        // Only a held button press can trigger the configuration reset.
+        if (button_pressed && gpio_get_level(PM_INT_CRITICAL) == 0)
+        {
+            esp_timer_start_once(long_press_timer, 5000000);
+            // Close the race where the button is released just before the
+            // timer becomes active and the rising-edge ISR has already run.
+            if (gpio_get_level(PM_INT_CRITICAL) != 0)
+                esp_timer_stop(long_press_timer);
+        }
     }
 }
 
@@ -556,9 +543,16 @@ static void IRAM_ATTR critical_isr_handler(void* arg)
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     if (gpio_get_level(PM_INT_CRITICAL) == 0) // Falling edge
     {
+        // Critical current and button presses both require immediate cutoff.
+        gpio_set_level(PM_EXPANDER_RST, 0);
+
         if (shutdown_task_handle != NULL)
         {
             vTaskNotifyGiveFromISR(shutdown_task_handle, &xHigherPriorityTaskWoken);
+        }
+        else
+        {
+            critical_cutoff_pending = true;
         }
     }
     else // Rising edge
@@ -581,11 +575,15 @@ static void IRAM_ATTR warning_isr_handler(void* arg)
 
 static void gpio_init()
 {
+    // Configure the cutoff output before enabling the critical interrupt.
+    gpio_set_level(PM_EXPANDER_RST, 1);
+    gpio_set_direction(PM_EXPANDER_RST, GPIO_MODE_OUTPUT);
+
     // critical int
     gpio_set_intr_type(PM_INT_CRITICAL, GPIO_INTR_ANYEDGE);
     gpio_set_direction(PM_INT_CRITICAL, GPIO_MODE_INPUT);
     gpio_set_pull_mode(PM_INT_CRITICAL, GPIO_PULLUP_ONLY);
-    gpio_install_isr_service(0);
+    gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
     gpio_isr_handler_add(PM_INT_CRITICAL, critical_isr_handler, (void*)PM_INT_CRITICAL);
 
     // warning int
@@ -593,10 +591,6 @@ static void gpio_init()
     gpio_set_direction(PM_INT_WARNING, GPIO_MODE_INPUT);
     gpio_set_pull_mode(PM_INT_WARNING, GPIO_PULLUP_ONLY);
     gpio_isr_handler_add(PM_INT_WARNING, warning_isr_handler, (void*)PM_INT_WARNING);
-
-    // rst expander
-    gpio_set_level(PM_EXPANDER_RST, 1);
-    gpio_set_direction(PM_EXPANDER_RST, GPIO_MODE_OUTPUT);
 }
 
 esp_err_t climit_set_vin(double value)
@@ -664,6 +658,7 @@ void init_status_monitor()
     gpio_init();
     ESP_ERROR_CHECK(ina3221_init_desc(&ina3221, 0x40, 0, PM_SDA, PM_SCL));
     ESP_ERROR_CHECK(ina3221_sync(&ina3221));
+    ESP_ERROR_CHECK(ina3221_enable_latch_pin(&ina3221, false, true));
 
     double lim;
     char buf[16];
@@ -703,6 +698,12 @@ void init_status_monitor()
                 &shutdown_task_handle);
     xTaskCreate(warning_alert_task, "warning_alert_task", configMINIMAL_STACK_SIZE * 3, NULL, 10,
                 &warning_task_handle);
+    if ((critical_cutoff_pending || gpio_get_level(PM_INT_CRITICAL) == 0) && shutdown_task_handle != NULL)
+    {
+        critical_cutoff_pending = false;
+        gpio_set_level(PM_EXPANDER_RST, 0);
+        xTaskNotifyGive(shutdown_task_handle);
+    }
     if (gpio_get_level(PM_INT_WARNING) == 0 && warning_task_handle != NULL)
         xTaskNotifyGive(warning_task_handle);
 
