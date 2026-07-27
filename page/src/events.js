@@ -23,6 +23,52 @@ const RECOMMENDED_CURRENT_LIMITS_A = {
     USB: 4.0,
 };
 
+function formatBytes(bytes) {
+    if (!Number.isFinite(bytes)) return '-';
+    if (bytes < 1024) return `${bytes} B`;
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+}
+
+function formatUptime(seconds) {
+    if (!Number.isFinite(seconds)) return '-';
+    const days = Math.floor(seconds / 86400);
+    const hours = Math.floor((seconds % 86400) / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const remainingSeconds = seconds % 60;
+    return days > 0 ? `${days}d ${hours}h ${minutes}m` : `${hours}h ${minutes}m ${remainingSeconds}s`;
+}
+
+async function refreshDiagnostics() {
+    if (!dom.diagnosticsRefreshButton) return;
+
+    dom.diagnosticsRefreshButton.disabled = true;
+    dom.diagnosticsStatus.textContent = 'Refreshing...';
+    dom.diagnosticsStatus.classList.remove('text-danger');
+    dom.diagnosticsStatus.classList.add('text-secondary');
+
+    try {
+        const data = await api.fetchDiagnostics();
+        dom.diagnosticsUptime.textContent = formatUptime(data.uptime_seconds);
+        dom.diagnosticsHeap.textContent = `${formatBytes(data.free_heap_bytes)} free / ${formatBytes(data.minimum_free_heap_bytes)} min`;
+        dom.diagnosticsLargestBlock.textContent = formatBytes(data.largest_free_block_bytes);
+        dom.diagnosticsHttpClients.textContent = `${data.http_clients} active`;
+        dom.diagnosticsWebsocket.textContent = `${data.websocket_clients} clients, ${data.websocket_queue_depth}/${data.websocket_queue_capacity} queued`;
+        dom.diagnosticsUart.textContent = `${formatBytes(data.uart_buffered_bytes)} buffered, ${formatBytes(data.uart_received_bytes)} received`;
+        dom.diagnosticsUartErrors.textContent = `FIFO ${data.uart_fifo_overflows}, buffer ${data.uart_buffer_full_events}`;
+        dom.diagnosticsQueueDrops.textContent = `UART ${data.uart_queue_drops}, status ${data.status_queue_drops}`;
+        dom.diagnosticsWsFailures.textContent = data.websocket_send_failures;
+        dom.diagnosticsWifi.textContent = data.wifi_connected ? `Connected (${data.wifi_rssi} dBm)` : 'Disconnected';
+        dom.diagnosticsStatus.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+    } catch (error) {
+        console.error('Error fetching diagnostics:', error);
+        dom.diagnosticsStatus.textContent = 'Failed to fetch diagnostics';
+        dom.diagnosticsStatus.classList.remove('text-secondary');
+        dom.diagnosticsStatus.classList.add('text-danger');
+    } finally {
+        dom.diagnosticsRefreshButton.disabled = false;
+    }
+}
+
 // --- Helper functions for settings ---
 
 function updateSliderValue(slider, span) {
@@ -217,6 +263,9 @@ export function setupEventListeners() {
     dom.usbPowerToggle.addEventListener('change', () => postPowerToggleCommand({'load_5v_on': dom.usbPowerToggle.checked}));
     dom.resetButton.addEventListener('click', () => api.postControlCommand({'reset_trigger': true}));
     dom.powerActionButton.addEventListener('click', () => api.postControlCommand({'power_trigger': true}));
+    if (dom.diagnosticsRefreshButton) {
+        dom.diagnosticsRefreshButton.addEventListener('click', refreshDiagnostics);
+    }
 
     // --- Settings Modal Controls ---
     dom.scanWifiButton.addEventListener('click', ui.scanForWifi);
@@ -353,6 +402,8 @@ export function setupEventListeners() {
                 if (isMobile()) {
                     fitTerminal();
                 }
+            } else if (tabId === '#debug-tab-pane') {
+                refreshDiagnostics();
             }
         });
     });

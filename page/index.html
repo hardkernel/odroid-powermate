@@ -88,6 +88,11 @@
                     type="button" role="tab">Events
             </button>
         </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="debug-tab-btn" data-bs-toggle="tab" data-bs-target="#debug-tab-pane"
+                    type="button" role="tab">Debug
+            </button>
+        </li>
     </ul>
 
     <div class="tab-content" id="myTabContent">
@@ -188,6 +193,34 @@
                             </tbody>
                         </table>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-pane fade" id="debug-tab-pane" role="tabpanel">
+            <div class="card border-top-0 rounded-0 rounded-bottom">
+                <div class="card-body">
+                    <div class="d-flex align-items-center justify-content-between mb-2">
+                        <h5 class="card-title mb-0">Diagnostics</h5>
+                        <button id="diagnostics-refresh-button" class="btn btn-sm btn-outline-primary" type="button">
+                            <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                        </button>
+                    </div>
+                    <p id="diagnostics-status" class="small text-secondary mb-3" aria-live="polite">Not queried</p>
+                    <table class="table table-sm mb-0">
+                        <tbody>
+                        <tr><th scope="row">Uptime</th><td id="diagnostics-uptime">-</td></tr>
+                        <tr><th scope="row">Heap</th><td id="diagnostics-heap">-</td></tr>
+                        <tr><th scope="row">Largest block</th><td id="diagnostics-largest-block">-</td></tr>
+                        <tr><th scope="row">HTTP clients</th><td id="diagnostics-http-clients">-</td></tr>
+                        <tr><th scope="row">WebSocket</th><td id="diagnostics-websocket">-</td></tr>
+                        <tr><th scope="row">UART</th><td id="diagnostics-uart">-</td></tr>
+                        <tr><th scope="row">UART errors</th><td id="diagnostics-uart-errors">-</td></tr>
+                        <tr><th scope="row">Queue drops</th><td id="diagnostics-queue-drops">-</td></tr>
+                        <tr><th scope="row">WS send failures</th><td id="diagnostics-ws-failures">-</td></tr>
+                        <tr><th scope="row">Wi-Fi</th><td id="diagnostics-wifi">-</td></tr>
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>

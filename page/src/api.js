@@ -206,6 +206,17 @@ export async function fetchVersion() {
 }
 
 /**
+ * Fetches runtime diagnostics for troubleshooting HTTP, WebSocket, and UART issues.
+ * @returns {Promise<Object>} A snapshot of the device diagnostic counters.
+ */
+export async function fetchDiagnostics() {
+    const response = await fetch('/api/diagnostics', {
+        headers: getAuthHeaders(),
+    });
+    return await handleResponse(response).then(res => res.json());
+}
+
+/**
  * Updates the user's username and password on the server.
  * @param {string} newUsername The new username.
  * @param {string} newPassword The new password.

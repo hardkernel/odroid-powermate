@@ -8,6 +8,7 @@
 #include "esp_http_server.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "nconfig.h"
 #include "pb.h"
@@ -44,10 +45,15 @@ struct bytes_arg
     size_t len;
 };
 
-#define MAX_CLIENT 7
+#define MAX_CLIENT POWERMATE_HTTP_MAX_OPEN_SOCKETS
 static QueueHandle_t ws_queue;
 static QueueHandle_t uart_event_queue;
-static int client_fds[MAX_CLIENT];
+static volatile uint32_t uart_received_bytes;
+static volatile uint32_t uart_fifo_overflows;
+static volatile uint32_t uart_buffer_full_events;
+static volatile uint32_t uart_queue_drops;
+static volatile uint32_t status_queue_drops;
+static volatile uint32_t websocket_send_failures;
 
 static bool encode_bytes_callback(pb_ostream_t* stream, const pb_field_t* field, void* const* arg)
 {
@@ -63,6 +69,7 @@ static void unified_ws_sender_task(void* arg)
 {
     httpd_handle_t server = (httpd_handle_t)arg;
     struct ws_message msg;
+    int client_fds[MAX_CLIENT];
 
     while (1)
     {
@@ -94,6 +101,7 @@ static void unified_ws_sender_task(void* arg)
                     esp_err_t err = httpd_ws_send_frame_async(server, fd, &ws_pkt);
                     if (err != ESP_OK)
                     {
+                        websocket_send_failures++;
                         ESP_LOGW(TAG, "unified_ws_sender_task: async send failed for fd %d, error: %s", fd,
                                  esp_err_to_name(err));
                     }
@@ -102,7 +110,6 @@ static void unified_ws_sender_task(void* arg)
             free(msg.data);
         }
     }
-    free(client_fds);
     vTaskDelete(NULL);
 }
 
@@ -127,6 +134,7 @@ static void uart_polling_task(void* arg)
 
         if (bytes_read > 0)
         {
+            uart_received_bytes += bytes_read;
             size_t offset = 0;
             while (offset < bytes_read)
             {
@@ -162,6 +170,7 @@ static void uart_polling_task(void* arg)
 
                 if (xQueueSend(ws_queue, &msg, pdMS_TO_TICKS(10)) != pdPASS)
                 {
+                    uart_queue_drops++;
                     ESP_LOGW(TAG, "ws sender queue full, dropping %zu bytes", chunk_size);
                     free(msg.data);
                 }
@@ -183,11 +192,13 @@ static void uart_event_task(void* arg)
             switch (event.type)
             {
             case UART_FIFO_OVF:
+                uart_fifo_overflows++;
                 ESP_LOGW(TAG, "UART HW FIFO Overflow");
                 uart_flush_input(UART_NUM);
                 xQueueReset(uart_event_queue);
                 break;
             case UART_BUFFER_FULL:
+                uart_buffer_full_events++;
                 ESP_LOGW(TAG, "UART ring buffer full");
                 uart_flush_input(UART_NUM);
                 xQueueReset(uart_event_queue);
@@ -348,9 +359,32 @@ void push_data_to_ws(const uint8_t* data, size_t len)
 
     if (xQueueSend(ws_queue, &msg, pdMS_TO_TICKS(10)) != pdPASS)
     {
+        status_queue_drops++;
         ESP_LOGW(TAG, "WS queue full, dropping status message");
         free(msg.data);
     }
+}
+
+void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics)
+{
+    if (!diagnostics)
+        return;
+
+    memset(diagnostics, 0, sizeof(*diagnostics));
+    if (ws_queue)
+    {
+        diagnostics->queue_depth = uxQueueMessagesWaiting(ws_queue);
+        diagnostics->queue_capacity = diagnostics->queue_depth + uxQueueSpacesAvailable(ws_queue);
+    }
+    if (uart_event_queue)
+        uart_get_buffered_data_len(UART_NUM, &diagnostics->uart_buffered_bytes);
+
+    diagnostics->uart_received_bytes = uart_received_bytes;
+    diagnostics->uart_fifo_overflows = uart_fifo_overflows;
+    diagnostics->uart_buffer_full_events = uart_buffer_full_events;
+    diagnostics->uart_queue_drops = uart_queue_drops;
+    diagnostics->status_queue_drops = status_queue_drops;
+    diagnostics->websocket_send_failures = websocket_send_failures;
 }
 
 esp_err_t change_baud_rate(int baud_rate) { return uart_set_baudrate(UART_NUM, baud_rate); }

@@ -32,6 +32,18 @@ export const currentChartCtx = document.getElementById('currentChart')?.getConte
 
 // --- Event Table Elements ---
 export const eventTableBody = document.getElementById('event-table-body');
+export const diagnosticsRefreshButton = document.getElementById('diagnostics-refresh-button');
+export const diagnosticsStatus = document.getElementById('diagnostics-status');
+export const diagnosticsUptime = document.getElementById('diagnostics-uptime');
+export const diagnosticsHeap = document.getElementById('diagnostics-heap');
+export const diagnosticsLargestBlock = document.getElementById('diagnostics-largest-block');
+export const diagnosticsHttpClients = document.getElementById('diagnostics-http-clients');
+export const diagnosticsWebsocket = document.getElementById('diagnostics-websocket');
+export const diagnosticsUart = document.getElementById('diagnostics-uart');
+export const diagnosticsUartErrors = document.getElementById('diagnostics-uart-errors');
+export const diagnosticsQueueDrops = document.getElementById('diagnostics-queue-drops');
+export const diagnosticsWsFailures = document.getElementById('diagnostics-ws-failures');
+export const diagnosticsWifi = document.getElementById('diagnostics-wifi');
 
 
 // --- WebSocket Status Elements ---
