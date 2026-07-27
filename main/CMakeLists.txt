@@ -42,6 +42,7 @@ add_custom_command(
         ${WEB_APP_SOURCE_DIR}/src/main.js
         ${WEB_APP_SOURCE_DIR}/src/style.css
         ${WEB_APP_SOURCE_DIR}/src/terminal.js
+        ${WEB_APP_SOURCE_DIR}/src/uart-websocket.js
         ${WEB_APP_SOURCE_DIR}/src/ui.js
         ${WEB_APP_SOURCE_DIR}/src/utils.js
         ${WEB_APP_SOURCE_DIR}/src/websocket.js

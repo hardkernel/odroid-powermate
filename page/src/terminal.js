@@ -9,7 +9,7 @@ import '@xterm/xterm/css/xterm.css';
 import {FitAddon} from '@xterm/addon-fit';
 import {terminalContainer} from './dom.js';
 import {isMobile} from './utils.js';
-import {sendWebsocketMessage} from './websocket.js';
+import {sendUartMessage} from './uart-websocket.js';
 
 // Exported terminal instance and addon for global access
 export let term;
@@ -54,7 +54,7 @@ export function setupTerminal() {
 
     // Handle user input and send it over the WebSocket
     term.onData(data => {
-        sendWebsocketMessage(data);
+        sendUartMessage(data);
     });
 }
 

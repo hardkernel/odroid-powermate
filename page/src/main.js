@@ -15,6 +15,7 @@ import {StatusMessage} from './proto.js';
 import * as api from './api.js';
 import {initWebSocket} from './websocket.js';
 import {setupTerminal, term} from './terminal.js';
+import {connectUartStream, disconnectUartStream} from './uart-websocket.js';
 import {
     addEventToTable,
     applyTheme,
@@ -61,6 +62,22 @@ const downloadCsvButton = document.getElementById('download-csv-button');
 const downloadEventsCsvButton = document.getElementById('download-events-csv-button');
 const clearEventsButton = document.getElementById('clear-events-button');
 const eventTableBody = document.getElementById('event-table-body');
+const uartStreamToggleButton = document.getElementById('uart-stream-toggle-button');
+
+let uartStreamPaused = false;
+
+function updateUartStream() {
+    const deviceTabActive = document.getElementById('terminal-tab-pane')?.classList.contains('active');
+    const shouldStream = !uartStreamPaused && deviceTabActive && document.visibilityState === 'visible';
+
+    if (shouldStream) {
+        connectUartStream((event) => {
+            if (event.data instanceof ArrayBuffer && term) term.write(new Uint8Array(event.data));
+        });
+    } else {
+        disconnectUartStream();
+    }
+}
 
 
 // --- WebSocket Event Handlers ---
@@ -68,10 +85,12 @@ const eventTableBody = document.getElementById('event-table-body');
 function onWsOpen() {
     updateWebsocketStatus(true);
     console.log('Connected to WebSocket Server');
+    updateUartStream();
 }
 
 function onWsClose() {
     updateWebsocketStatus(false);
+    disconnectUartStream();
     console.warn('Connection closed. Reconnecting...');
     setTimeout(connect, 2000);
 }
@@ -211,6 +230,7 @@ async function handleLogin(event) {
 
 function handleLogout() {
     localStorage.removeItem('authToken');
+    disconnectUartStream();
     // Hide main content and show login form
     loginContainer.style.setProperty('display', 'flex', 'important');
     mainContent.style.setProperty('display', 'none', 'important');
@@ -434,6 +454,15 @@ function initializeMainAppContent() {
     downloadCsvButton.addEventListener('click', downloadCSV);
     downloadEventsCsvButton.addEventListener('click', downloadEventsCSV);
     clearEventsButton.addEventListener('click', clearEvents);
+    uartStreamToggleButton.addEventListener('click', () => {
+        uartStreamPaused = !uartStreamPaused;
+        uartStreamToggleButton.textContent = uartStreamPaused ? 'Resume UART' : 'Pause UART';
+        updateUartStream();
+    });
+    document.addEventListener('visibilitychange', updateUartStream);
+    document.querySelectorAll('button[data-bs-toggle="tab"]').forEach((tab) => {
+        tab.addEventListener('shown.bs.tab', updateUartStream);
+    });
 
     connect();
 
