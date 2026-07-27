@@ -13,14 +13,20 @@ export function getAuthHeaders() {
     return {};
 }
 
+let authInvalidated = false;
+
+export function resetAuthInvalidation() {
+    authInvalidated = false;
+}
+
 // Global error handler for unauthorized responses
 export async function handleResponse(response) {
     if (response.status === 401) {
-        // Unauthorized, log out the user
         localStorage.removeItem('authToken');
-        // Redirect to login or trigger a logout event
-        // For now, we'll just reload the page, which will trigger the login screen
-        window.location.reload();
+        if (!authInvalidated) {
+            authInvalidated = true;
+            window.dispatchEvent(new Event('auth-invalid'));
+        }
         throw new Error('Unauthorized: Session expired or invalid token.');
     }
     if (!response.ok) {

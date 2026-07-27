@@ -115,6 +115,16 @@ export function initWebSocket({onOpen, onClose, onMessage, onError}) {
     };
 }
 
+/** Closes the status WebSocket without scheduling a reconnect in the caller. */
+export function closeWebSocket() {
+    stopHeartbeat();
+    if (websocket) {
+        websocket.onclose = null;
+        websocket.close();
+        websocket = undefined;
+    }
+}
+
 /**
  * Sends data over the WebSocket connection if it is open.
  * @param {string | ArrayBuffer} data - The data to send to the server.

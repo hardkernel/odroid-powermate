@@ -13,7 +13,7 @@ import './style.css';
 // --- Module Imports -- -
 import {StatusMessage} from './proto.js';
 import * as api from './api.js';
-import {initWebSocket} from './websocket.js';
+import {closeWebSocket, initWebSocket} from './websocket.js';
 import {setupTerminal, term} from './terminal.js';
 import {connectUartStream, disconnectUartStream} from './uart-websocket.js';
 import {
@@ -35,6 +35,7 @@ import {setupEventListeners} from './events.js';
 let isRecording = false;
 let recordedData = [];
 let recordedEvents = [];
+let mainAppInitialized = false;
 
 // --- DOM Elements ---
 const loginContainer = document.getElementById('login-container');
@@ -91,6 +92,8 @@ function onWsOpen() {
 function onWsClose() {
     updateWebsocketStatus(false);
     disconnectUartStream();
+    if (!checkAuth()) return;
+
     console.warn('Connection closed. Reconnecting...');
     setTimeout(connect, 2000);
 }
@@ -147,9 +150,7 @@ function onWsMessage(event) {
                 break;
 
             case 'uartData':
-                if (term && decodedMessage.uartData && decodedMessage.uartData.data) {
-                    term.write(decodedMessage.uartData.data);
-                }
+                // UART data is delivered by the dedicated raw /uart WebSocket.
                 break;
 
             case 'eventData':
@@ -214,6 +215,7 @@ async function handleLogin(event) {
         const response = await api.login(username, password);
         if (response && response.token) {
             localStorage.setItem('authToken', response.token);
+            api.resetAuthInvalidation();
             loginAlert.classList.add('d-none');
             loginContainer.style.setProperty('display', 'none', 'important');
             initializeMainAppContent(); // After successful login, initialize the main app
@@ -231,6 +233,7 @@ async function handleLogin(event) {
 function handleLogout() {
     localStorage.removeItem('authToken');
     disconnectUartStream();
+    closeWebSocket();
     // Hide main content and show login form
     loginContainer.style.setProperty('display', 'flex', 'important');
     mainContent.style.setProperty('display', 'none', 'important');
@@ -420,9 +423,9 @@ function clearEvents() {
 
 // --- Application Initialization ---
 
-async function initializeVersion() {
+async function initializeVersion(versionData = null) {
     try {
-        const versionData = await api.fetchVersion();
+        versionData = versionData || await api.fetchVersion();
         if (versionData && versionData.version) {
             updateVersionUI(versionData.version);
         }
@@ -433,18 +436,27 @@ async function initializeVersion() {
 }
 
 function connect() {
+    if (!checkAuth()) return;
+
     updateControlStatus();
     initWebSocket({ onOpen: onWsOpen, onClose: onWsClose, onMessage: onWsMessage });
 }
 
 // New function to initialize main app content after successful login or on initial load if authenticated
-function initializeMainAppContent() {
+function initializeMainAppContent(versionData = null) {
     loginContainer.style.setProperty('display', 'none', 'important');
     mainContent.style.setProperty('display', 'block', 'important');
 
+    if (mainAppInitialized) {
+        initializeVersion(versionData);
+        connect();
+        return;
+    }
+
+    mainAppInitialized = true;
     initUI();
     setupTerminal();
-    initializeVersion();
+    initializeVersion(versionData);
     setupEventListeners(); // Attach main app event listeners
     logoutButton.addEventListener('click', handleLogout); // Attach logout listener
     
@@ -472,7 +484,7 @@ function initializeMainAppContent() {
     }
 }
 
-function initialize() {
+async function initialize() {
     setupThemeToggles(); // Setup theme toggles for both login and main (initial sync)
 
     // Always attach login form listener
@@ -486,10 +498,24 @@ function initialize() {
         return; // IMPORTANT: Stop execution here if not authenticated
     }
 
-    // If authenticated, initialize main content
-    console.log('Authenticated. Initializing main app content.');
-    initializeMainAppContent();
+    // Validate a saved token before starting control, settings, and WebSocket requests.
+    // A token from before a PowerMate reboot is no longer valid.
+    try {
+        const versionData = await api.fetchVersion();
+        if (checkAuth()) {
+            console.log('Authenticated. Initializing main app content.');
+            initializeMainAppContent(versionData);
+        }
+    } catch (error) {
+        if (!checkAuth()) return;
+
+        // Preserve the previous behavior for transient API failures: show the UI so
+        // the user can retry, while an invalid token returns to the login screen.
+        console.error('Error validating saved token:', error);
+        initializeMainAppContent();
+    }
 }
 
 // --- Start Application ---
+window.addEventListener('auth-invalid', handleLogout);
 document.addEventListener('DOMContentLoaded', initialize);

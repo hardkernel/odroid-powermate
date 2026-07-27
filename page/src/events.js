@@ -16,6 +16,9 @@ import {debounce, isMobile} from './utils.js';
 let chartsInitialized = false;
 let listenersAttached = false;
 let powerControlRequestInFlight = false;
+let diagnosticsRefreshTimer = null;
+let diagnosticsRequestInFlight = false;
+const DIAGNOSTICS_REFRESH_INTERVAL_MS = 2000;
 const CURRENT_LIMIT_STEP_A = 0.1;
 const RECOMMENDED_CURRENT_LIMITS_A = {
     VIN: 9.0,
@@ -39,7 +42,9 @@ function formatUptime(seconds) {
 }
 
 async function refreshDiagnostics() {
-    if (!dom.diagnosticsRefreshButton) return;
+    if (!dom.diagnosticsRefreshButton || diagnosticsRequestInFlight) return;
+
+    diagnosticsRequestInFlight = true;
 
     dom.diagnosticsRefreshButton.disabled = true;
     dom.diagnosticsStatus.textContent = 'Refreshing...';
@@ -58,14 +63,34 @@ async function refreshDiagnostics() {
         dom.diagnosticsQueueDrops.textContent = `UART ${data.uart_queue_drops}, status ${data.status_queue_drops}`;
         dom.diagnosticsWsFailures.textContent = data.websocket_send_failures;
         dom.diagnosticsWifi.textContent = data.wifi_connected ? `Connected (${data.wifi_rssi} dBm)` : 'Disconnected';
-        dom.diagnosticsStatus.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+        dom.diagnosticsStatus.textContent =
+            `Updated ${new Date().toLocaleTimeString()} (auto-refresh: ${DIAGNOSTICS_REFRESH_INTERVAL_MS / 1000} s)`;
     } catch (error) {
         console.error('Error fetching diagnostics:', error);
         dom.diagnosticsStatus.textContent = 'Failed to fetch diagnostics';
         dom.diagnosticsStatus.classList.remove('text-secondary');
         dom.diagnosticsStatus.classList.add('text-danger');
     } finally {
+        diagnosticsRequestInFlight = false;
         dom.diagnosticsRefreshButton.disabled = false;
+    }
+}
+
+function diagnosticsTabIsActive() {
+    return document.getElementById('debug-tab-pane')?.classList.contains('active');
+}
+
+function startDiagnosticsRefresh() {
+    if (diagnosticsRefreshTimer || document.visibilityState !== 'visible') return;
+
+    refreshDiagnostics();
+    diagnosticsRefreshTimer = setInterval(refreshDiagnostics, DIAGNOSTICS_REFRESH_INTERVAL_MS);
+}
+
+function stopDiagnosticsRefresh() {
+    if (diagnosticsRefreshTimer) {
+        clearInterval(diagnosticsRefreshTimer);
+        diagnosticsRefreshTimer = null;
     }
 }
 
@@ -387,6 +412,12 @@ export function setupEventListeners() {
         tabEl.addEventListener('shown.bs.tab', async (event) => {
             const tabId = event.target.getAttribute('data-bs-target');
 
+            if (tabId === '#debug-tab-pane') {
+                startDiagnosticsRefresh();
+            } else {
+                stopDiagnosticsRefresh();
+            }
+
             if (tabId === '#graph-tab-pane') {
                 // Dynamically import the chart module only when the tab is shown
                 const chartModule = await import('./chart.js');
@@ -402,10 +433,16 @@ export function setupEventListeners() {
                 if (isMobile()) {
                     fitTerminal();
                 }
-            } else if (tabId === '#debug-tab-pane') {
-                refreshDiagnostics();
             }
         });
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && diagnosticsTabIsActive()) {
+            startDiagnosticsRefresh();
+        } else {
+            stopDiagnosticsRefresh();
+        }
     });
 
     // --- Window Resize Event ---
