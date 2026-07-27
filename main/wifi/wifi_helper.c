@@ -73,6 +73,8 @@ const char* wifi_reason_str(wifi_err_reason_t reason)
         return "DISASSOC_PWRCAP_BAD";
     case WIFI_REASON_DISASSOC_SUPCHAN_BAD:
         return "DISASSOC_SUPCHAN_BAD";
+    case WIFI_REASON_BSS_TRANSITION_DISASSOC:
+        return "BSS_TRANSITION_DISASSOC";
     case WIFI_REASON_IE_INVALID:
         return "IE_INVALID";
     case WIFI_REASON_MIC_FAILURE:
@@ -97,6 +99,8 @@ const char* wifi_reason_str(wifi_err_reason_t reason)
         return "802_1X_AUTH_FAILED";
     case WIFI_REASON_CIPHER_SUITE_REJECTED:
         return "CIPHER_SUITE_REJECTED";
+    case WIFI_REASON_STA_LEAVING:
+        return "STA_LEAVING";
     case WIFI_REASON_INVALID_PMKID:
         return "INVALID_PMKID";
     case WIFI_REASON_BEACON_TIMEOUT:
@@ -115,6 +119,16 @@ const char* wifi_reason_str(wifi_err_reason_t reason)
         return "AP_TSF_RESET";
     case WIFI_REASON_ROAMING:
         return "ROAMING";
+    case WIFI_REASON_ASSOC_COMEBACK_TIME_TOO_LONG:
+        return "ASSOC_COMEBACK_TIME_TOO_LONG";
+    case WIFI_REASON_SA_QUERY_TIMEOUT:
+        return "SA_QUERY_TIMEOUT";
+    case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+        return "NO_AP_FOUND_W_COMPATIBLE_SECURITY";
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+        return "NO_AP_FOUND_IN_AUTHMODE_THRESHOLD";
+    case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
+        return "NO_AP_FOUND_IN_RSSI_THRESHOLD";
     default:
         return "UNKNOWN";
     }

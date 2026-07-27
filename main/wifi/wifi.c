@@ -2,6 +2,7 @@
 // Created by shinys on 25. 9. 1.
 //
 
+#include <assert.h>
 #include <string.h>
 #include "esp_event.h"
 #include "esp_log.h"
@@ -9,6 +10,7 @@
 #include "esp_system.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
 #include "freertos/task.h"
 #include "nconfig.h"
 #include "priv_wifi.h"
@@ -17,10 +19,30 @@
 
 #include "indicator.h"
 static bool s_auto_reconnect = true;
+static EventGroupHandle_t s_sta_event_group;
+
+#define STA_DISCONNECTED_BIT BIT0
 
 static const char* TAG = "WIFI";
 
 void wifi_set_auto_reconnect(bool enable) { s_auto_reconnect = enable; }
+bool wifi_get_auto_reconnect(void) { return s_auto_reconnect; }
+
+void wifi_prepare_sta_disconnect(void)
+{
+    if (s_sta_event_group)
+        xEventGroupClearBits(s_sta_event_group, STA_DISCONNECTED_BIT);
+}
+
+bool wifi_wait_for_sta_disconnect(uint32_t timeout_ms)
+{
+    if (!s_sta_event_group)
+        return false;
+
+    EventBits_t bits = xEventGroupWaitBits(s_sta_event_group, STA_DISCONNECTED_BIT,
+                                           pdTRUE, pdFALSE, pdMS_TO_TICKS(timeout_ms));
+    return (bits & STA_DISCONNECTED_BIT) != 0;
+}
 
 
 static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t event_id, void* event_data)
@@ -52,9 +74,11 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
     {
         led_set(LED_BLU, BLINK_TRIPLE);
         wifi_event_sta_disconnected_t* event = (wifi_event_sta_disconnected_t*)event_data;
-        ESP_LOGW(TAG, "Disconnected from AP, reason: %s", wifi_reason_str(event->reason));
+        if (s_sta_event_group)
+            xEventGroupSetBits(s_sta_event_group, STA_DISCONNECTED_BIT);
+        ESP_LOGW(TAG, "Disconnected from AP, reason: %s (%u)", wifi_reason_str(event->reason), event->reason);
 
-        if (event->reason != WIFI_REASON_ASSOC_LEAVE)
+        if (event->reason != WIFI_REASON_ASSOC_LEAVE && event->reason != WIFI_REASON_STA_LEAVING)
         {
             if (s_auto_reconnect && !nconfig_value_is_not_set(WIFI_SSID))
             {
@@ -81,6 +105,9 @@ void wifi_init(void)
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    s_sta_event_group = xEventGroupCreate();
+    assert(s_sta_event_group != NULL);
 
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));

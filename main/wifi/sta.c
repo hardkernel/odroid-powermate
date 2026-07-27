@@ -242,37 +242,49 @@ esp_err_t wifi_sta_set_ap(const char* ssid, const char* password)
 {
     ESP_LOGI(TAG, "Setting new AP with SSID: %s", ssid);
 
-    // Save settings to NVS first
-    esp_err_t err = nconfig_write(WIFI_SSID, ssid);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to save SSID to NVS: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    err = nconfig_write(WIFI_PASSWORD, password);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to save password to NVS: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    // Now configure the wifi interface
     wifi_config_t wifi_config = {0};
     strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
     strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password));
+
+    bool auto_reconnect = wifi_get_auto_reconnect();
+    wifi_set_auto_reconnect(false);
+    wifi_prepare_sta_disconnect();
+
+    ESP_LOGI(TAG, "Disconnecting from current AP if connected.");
+    esp_err_t err = esp_wifi_disconnect();
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to disconnect from current AP: %s", esp_err_to_name(err));
+        wifi_set_auto_reconnect(auto_reconnect);
+        return err;
+    }
+
+    if (!wifi_wait_for_sta_disconnect(5000))
+    {
+        ESP_LOGE(TAG, "Timed out waiting for Wi-Fi disconnect");
+        wifi_set_auto_reconnect(auto_reconnect);
+        return ESP_ERR_TIMEOUT;
+    }
 
     err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to set Wi-Fi config: %s", esp_err_to_name(err));
+        wifi_set_auto_reconnect(auto_reconnect);
         return err;
     }
 
-    // Disconnect from any current AP and connect to the new one
-    ESP_LOGI(TAG, "Disconnecting from current AP if connected.");
-    esp_wifi_disconnect();
+    err = nconfig_write(WIFI_SSID, ssid);
+    if (err == ESP_OK)
+        err = nconfig_write(WIFI_PASSWORD, password);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to save Wi-Fi credentials: %s", esp_err_to_name(err));
+        wifi_set_auto_reconnect(auto_reconnect);
+        return err;
+    }
 
+    wifi_set_auto_reconnect(auto_reconnect);
     ESP_LOGI(TAG, "Connecting to new AP...");
     err = esp_wifi_connect();
     if (err != ESP_OK)
