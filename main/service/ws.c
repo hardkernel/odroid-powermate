@@ -54,6 +54,7 @@ static volatile uint32_t uart_buffer_full_events;
 static volatile uint32_t uart_queue_drops;
 static volatile uint32_t status_queue_drops;
 static volatile uint32_t websocket_send_failures;
+static int blocked_ws_fds[MAX_CLIENT];
 
 static bool encode_bytes_callback(pb_ostream_t* stream, const pb_field_t* field, void* const* arg)
 {
@@ -63,6 +64,81 @@ static bool encode_bytes_callback(pb_ostream_t* stream, const pb_field_t* field,
         return false;
     }
     return pb_encode_string(stream, (uint8_t*)br->data, br->len);
+}
+
+static bool websocket_fd_is_blocked(int fd)
+{
+    for (size_t i = 0; i < MAX_CLIENT; ++i)
+    {
+        if (blocked_ws_fds[i] == fd)
+            return true;
+    }
+
+    return false;
+}
+
+static void websocket_block_fd(int fd)
+{
+    for (size_t i = 0; i < MAX_CLIENT; ++i)
+    {
+        if (blocked_ws_fds[i] == fd)
+            return;
+        if (blocked_ws_fds[i] == 0)
+        {
+            blocked_ws_fds[i] = fd;
+            return;
+        }
+    }
+}
+
+static void websocket_unblock_fd(int fd)
+{
+    for (size_t i = 0; i < MAX_CLIENT; ++i)
+    {
+        if (blocked_ws_fds[i] == fd)
+            blocked_ws_fds[i] = 0;
+    }
+}
+
+static void websocket_cleanup_blocked_fds(const int* client_fds, size_t clients)
+{
+    for (size_t i = 0; i < MAX_CLIENT; ++i)
+    {
+        if (blocked_ws_fds[i] == 0)
+            continue;
+
+        bool still_connected = false;
+        for (size_t j = 0; j < clients; ++j)
+        {
+            if (blocked_ws_fds[i] == client_fds[j])
+            {
+                still_connected = true;
+                break;
+            }
+        }
+        if (!still_connected)
+            blocked_ws_fds[i] = 0;
+    }
+}
+
+static bool websocket_client_connected(httpd_handle_t server)
+{
+    int client_fds[MAX_CLIENT];
+    size_t clients = MAX_CLIENT;
+
+    if (httpd_get_client_list(server, &clients, client_fds) != ESP_OK)
+        return false;
+
+    websocket_cleanup_blocked_fds(client_fds, clients);
+
+    for (size_t i = 0; i < clients; ++i)
+    {
+        if (!websocket_fd_is_blocked(client_fds[i]) &&
+            httpd_ws_get_fd_info(server, client_fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET)
+            return true;
+    }
+
+    return false;
 }
 
 static void unified_ws_sender_task(void* arg)
@@ -82,6 +158,8 @@ static void unified_ws_sender_task(void* arg)
                 continue;
             }
 
+            websocket_cleanup_blocked_fds(client_fds, clients);
+
             if (clients == 0)
             {
                 free(msg.data);
@@ -96,14 +174,17 @@ static void unified_ws_sender_task(void* arg)
             for (size_t i = 0; i < clients; ++i)
             {
                 int fd = client_fds[i];
-                if (httpd_ws_get_fd_info(server, fd) == HTTPD_WS_CLIENT_WEBSOCKET)
+                if (!websocket_fd_is_blocked(fd) &&
+                    httpd_ws_get_fd_info(server, fd) == HTTPD_WS_CLIENT_WEBSOCKET)
                 {
                     esp_err_t err = httpd_ws_send_frame_async(server, fd, &ws_pkt);
                     if (err != ESP_OK)
                     {
                         websocket_send_failures++;
+                        websocket_block_fd(fd);
                         ESP_LOGW(TAG, "unified_ws_sender_task: async send failed for fd %d, error: %s", fd,
                                  esp_err_to_name(err));
+                        httpd_sess_trigger_close(server, fd);
                     }
                 }
             }
@@ -115,6 +196,7 @@ static void unified_ws_sender_task(void* arg)
 
 static void uart_polling_task(void* arg)
 {
+    httpd_handle_t server = (httpd_handle_t)arg;
     static uint8_t data_buf[BUF_SIZE];
     static uint8_t pb_buffer[PB_UART_BUFFER_SIZE];
 
@@ -135,10 +217,19 @@ static void uart_polling_task(void* arg)
         if (bytes_read > 0)
         {
             uart_received_bytes += bytes_read;
+
+            // Drain the UART regardless of browser state, but avoid encoding and allocating data that cannot be sent.
+            bool websocket_connected = websocket_client_connected(server);
             size_t offset = 0;
             while (offset < bytes_read)
             {
                 size_t chunk_size = (bytes_read - offset > CHUNK_SIZE) ? CHUNK_SIZE : (bytes_read - offset);
+
+                if (!websocket_connected || uxQueueSpacesAvailable(ws_queue) == 0)
+                {
+                    uart_queue_drops++;
+                    break;
+                }
 
                 StatusMessage message = StatusMessage_init_zero;
                 message.which_payload = StatusMessage_uart_data_tag;
@@ -168,7 +259,7 @@ static void uart_polling_task(void* arg)
 
                 memcpy(msg.data, pb_buffer, msg.len);
 
-                if (xQueueSend(ws_queue, &msg, pdMS_TO_TICKS(10)) != pdPASS)
+                if (xQueueSend(ws_queue, &msg, 0) != pdPASS)
                 {
                     uart_queue_drops++;
                     ESP_LOGW(TAG, "ws sender queue full, dropping %zu bytes", chunk_size);
@@ -260,6 +351,7 @@ static esp_err_t ws_handler(httpd_req_t* req)
                 return ESP_FAIL;
             }
             ESP_LOGD(TAG, "WebSocket token validated for URI: %s", req->uri);
+            websocket_unblock_fd(httpd_req_to_sockfd(req));
         }
         else
         {
@@ -339,7 +431,7 @@ void register_ws_endpoint(httpd_handle_t server)
 
     ws_queue = xQueueCreate(10, sizeof(struct ws_message));
 
-    xTaskCreate(uart_polling_task, "uart_polling_task", 1024 * 4, NULL, 8, NULL);
+    xTaskCreate(uart_polling_task, "uart_polling_task", 1024 * 4, server, 8, NULL);
     xTaskCreate(unified_ws_sender_task, "ws_sender_task", 1024 * 6, server, 9, NULL);
     xTaskCreate(uart_event_task, "uart_event_task", 1024 * 2, NULL, 10, NULL);
 }
