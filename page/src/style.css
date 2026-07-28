@@ -122,6 +122,10 @@ footer a {
         flex-direction: column;
     }
 
+    .main-header > .order-md-2 {
+        order: -1;
+    }
+
     .header-controls {
         width: 100%;
         justify-content: space-between !important;
