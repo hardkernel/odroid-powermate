@@ -13,6 +13,14 @@
  */
 void wifi_init(void);
 
+typedef enum
+{
+    WIFI_STA_CONNECTION_IDLE,
+    WIFI_STA_CONNECTION_CONNECTING,
+    WIFI_STA_CONNECTION_CONNECTED,
+    WIFI_STA_CONNECTION_FAILED,
+} wifi_sta_connection_state_t;
+
 /**
  * @brief Converts a Wi-Fi authentication mode enum to its string representation.
  * @param mode The Wi-Fi authentication mode.
@@ -59,6 +67,16 @@ esp_err_t wifi_get_current_ap_info(wifi_ap_record_t* ap_info);
  * @return ESP_OK on success, or an error code on failure.
  */
 esp_err_t wifi_get_current_ip_info(esp_netif_ip_info_t* ip_info);
+
+/**
+ * @brief Gets the current STA connection attempt state.
+ */
+wifi_sta_connection_state_t wifi_get_sta_connection_state(void);
+
+/**
+ * @brief Gets the reason for the last terminal STA connection failure.
+ */
+wifi_err_reason_t wifi_get_sta_connection_failure_reason(void);
 
 /**
  * @brief Gets the DNS server information for the STA interface.

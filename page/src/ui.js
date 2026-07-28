@@ -14,6 +14,42 @@ import {applyChartsTheme, resizeCharts, updateCharts} from './chart.js';
 
 // Instance of the Bootstrap Modal for Wi-Fi connection
 let wifiModal;
+const WIFI_CONNECT_TIMEOUT_MS = 20000;
+const WIFI_CONNECT_POLL_INTERVAL_MS = 1000;
+
+function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitForWifiConnection() {
+    const deadline = Date.now() + WIFI_CONNECT_TIMEOUT_MS;
+    let lastRequestError;
+
+    while (Date.now() < deadline) {
+        await wait(WIFI_CONNECT_POLL_INTERVAL_MS);
+        let status;
+        try {
+            status = await api.fetchSettings();
+        } catch (error) {
+            // APSTA may change channels while the STA joins the selected AP.
+            lastRequestError = error;
+            continue;
+        }
+
+        if (status.wifi_connection_status === 'connected' && status.connected) {
+            return status;
+        }
+        if (status.wifi_connection_status === 'failed') {
+            const reason = status.wifi_failure_reason || 'UNKNOWN';
+            throw new Error(`Wi-Fi connection failed: ${reason}`);
+        }
+    }
+
+    if (lastRequestError) {
+        throw new Error('Connection result is unavailable because the web connection was interrupted.');
+    }
+    throw new Error('Timed out waiting for Wi-Fi connection result.');
+}
 
 /**
  * Initializes the UI components, such as the Bootstrap modal.
@@ -221,9 +257,11 @@ export async function connectToWifi() {
     try {
         const result = await api.postWifiConnect(ssid, password);
         if (result.status === 'ok' || result.wifi_status === 'connecting') {
+            const status = await waitForWifiConnection();
             wifiModal.hide();
             setTimeout(() => {
-                alert(`Connection to "${ssid}" initiated. The device will try to reconnect. Please check the Wi-Fi status icon.`);
+                const ip = status.ip?.ip || 'an IP address';
+                alert(`Connected to "${ssid}". The device received ${ip}.`);
             }, 500);
         } else {
             throw new Error(result.message || 'Unknown server response.');
@@ -307,12 +345,26 @@ export async function applyApModeSettings() {
     }
 
     try {
-        await api.postNetworkSettings(payload); // Reuses the same API endpoint
-        alert(`Successfully switched mode to ${mode}. The device will now reconfigure.`);
-        initializeSettings();
+        const response = await api.postNetworkSettings(payload); // Reuses the same API endpoint
+        const result = await response.json();
+        if (result.mode_status === 'error') {
+            throw new Error(result.message || 'The device rejected the Wi-Fi mode change.');
+        }
+
+        const reconnectTarget = mode === 'apsta' ? 'http://192.168.4.1' : 'the device\'s STA address';
+        alert(`Wi-Fi mode reconfiguration started. The current web connection may close. Wait a few seconds, then reconnect at ${reconnectTarget}.`);
     } catch (error) {
-        console.error('Error switching Wi-Fi mode:', error);
-        alert(`Failed to switch mode: ${error.message}`);
+        const errorMessage = error?.message || String(error);
+        const requestInterrupted = error instanceof TypeError ||
+            errorMessage === 'Failed to fetch' ||
+            errorMessage.includes('NetworkError');
+        if (requestInterrupted) {
+            const reconnectTarget = mode === 'apsta' ? 'http://192.168.4.1' : 'the device\'s STA address';
+            alert(`Wi-Fi mode reconfiguration may have started. The current web connection was interrupted. Wait a few seconds, then reconnect at ${reconnectTarget}.`);
+        } else {
+            console.error('Error switching Wi-Fi mode:', error);
+            alert(`Failed to switch mode: ${errorMessage}`);
+        }
     } finally {
         dom.apModeApplyButton.disabled = false;
         dom.apModeApplyButton.innerHTML = 'Apply';

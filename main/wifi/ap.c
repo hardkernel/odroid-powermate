@@ -13,8 +13,7 @@
 
 static const char* TAG = "AP";
 
-#define DEFAULT_AP_SSID "odroid-pm"
-#define DEFAULT_AP_PASS "powermate"
+#define DEFAULT_AP_SSID "powermate"
 #define AP_CHANNEL 1
 #define AP_MAX_CONN 4
 

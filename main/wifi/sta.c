@@ -6,12 +6,22 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "lwip/inet.h"
 #include "nconfig.h"
 #include "priv_wifi.h"
 #include "wifi.h"
 
 static const char* TAG = "STA";
+
+#define WIFI_DISCONNECT_WAIT_MS 500
+#define WIFI_CONFIG_RETRY_COUNT 10
+#define WIFI_CONFIG_RETRY_DELAY_MS 100
+
+static esp_err_t wifi_use_dhcp_locked(void);
+static esp_err_t wifi_use_static_locked(const char* ip, const char* gw, const char* netmask,
+                                        const char* dns1, const char* dns2);
 
 /**
  * @brief Initializes and configures the STA mode.
@@ -56,7 +66,7 @@ void wifi_init_sta(void)
             nconfig_read(NETIF_SUBNET, netmask, sizeof(netmask));
             nconfig_read(NETIF_DNS1, dns1, sizeof(dns1));
             nconfig_read(NETIF_DNS2, dns2, sizeof(dns2));
-            wifi_use_static(ip, gw, netmask, dns1, dns2);
+            wifi_use_static_locked(ip, gw, netmask, dns1, dns2);
         }
     }
 
@@ -65,14 +75,22 @@ void wifi_init_sta(void)
 
 esp_err_t wifi_connect(void)
 {
-    ESP_LOGI(TAG, "Connecting to AP...");
-    return esp_wifi_connect();
+    wifi_control_lock();
+    wifi_reset_reconnect_backoff();
+    esp_err_t err = wifi_connect_locked();
+    wifi_control_unlock();
+    return err;
 }
 
 esp_err_t wifi_disconnect(void)
 {
     ESP_LOGI(TAG, "Disconnecting from AP...");
-    return esp_wifi_disconnect();
+    wifi_control_lock();
+    wifi_cancel_sta_connection();
+    wifi_prepare_sta_disconnect();
+    esp_err_t err = esp_wifi_disconnect();
+    wifi_control_unlock();
+    return err;
 }
 
 void wifi_scan_aps(wifi_ap_record_t** ap_records, uint16_t* count)
@@ -81,16 +99,28 @@ void wifi_scan_aps(wifi_ap_record_t** ap_records, uint16_t* count)
     *count = 0;
     *ap_records = NULL;
 
+    wifi_control_lock();
+    bool auto_reconnect = wifi_get_auto_reconnect();
     wifi_set_auto_reconnect(false);
 
-    wifi_ap_record_t ap_info;
-    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK)
+    if (!wifi_sta_is_connected())
     {
-        esp_wifi_disconnect();
+        wifi_cancel_sta_connection();
+        wifi_prepare_sta_disconnect();
+        esp_err_t disconnect_err = esp_wifi_disconnect();
+        if (disconnect_err == ESP_OK)
+        {
+            wifi_wait_for_sta_disconnect(WIFI_DISCONNECT_WAIT_MS);
+        }
+        else if (disconnect_err != ESP_ERR_WIFI_NOT_CONNECT)
+        {
+            ESP_LOGW(TAG, "Failed to stop STA connection before scan: %s", esp_err_to_name(disconnect_err));
+        }
     }
 
-    // Start scan, this is a blocking call
-    if (esp_wifi_scan_start(NULL, true) == ESP_OK)
+    // Start scan, this is a blocking call. A connected STA is left associated.
+    esp_err_t scan_err = esp_wifi_scan_start(NULL, true);
+    if (scan_err == ESP_OK)
     {
         esp_wifi_scan_get_ap_num(count);
         ESP_LOGI(TAG, "Found %d APs", *count);
@@ -108,15 +138,25 @@ void wifi_scan_aps(wifi_ap_record_t** ap_records, uint16_t* count)
             }
         }
     }
+    else
+    {
+        ESP_LOGW(TAG, "Failed to scan for APs: %s", esp_err_to_name(scan_err));
+    }
 
-    wifi_set_auto_reconnect(true);
+    wifi_set_auto_reconnect(auto_reconnect);
 
-    if (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK)
+    bool reconnect_after_scan = false;
+    if (!wifi_sta_is_connected())
     {
         if (!nconfig_value_is_not_set(WIFI_SSID))
-        {
-            wifi_connect();
-        }
+            reconnect_after_scan = auto_reconnect;
+    }
+    wifi_control_unlock();
+
+    if (reconnect_after_scan)
+    {
+        wifi_reset_reconnect_backoff();
+        wifi_schedule_reconnect();
     }
 }
 
@@ -126,13 +166,9 @@ esp_err_t wifi_get_current_ap_info(wifi_ap_record_t* ap_info)
     {
         return ESP_ERR_INVALID_ARG;
     }
-    // This function retrieves the AP record to which the STA is currently connected.
-    esp_err_t err = esp_wifi_sta_get_ap_info(ap_info);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to get connected AP info: %s", esp_err_to_name(err));
-    }
-    return err;
+    if (!wifi_sta_is_connected())
+        return ESP_ERR_WIFI_NOT_CONNECT;
+    return esp_wifi_sta_get_ap_info(ap_info);
 }
 
 esp_err_t wifi_get_current_ip_info(esp_netif_ip_info_t* ip_info)
@@ -141,6 +177,8 @@ esp_err_t wifi_get_current_ip_info(esp_netif_ip_info_t* ip_info)
     {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!wifi_sta_is_connected())
+        return ESP_ERR_WIFI_NOT_CONNECT;
     esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif == NULL)
     {
@@ -165,6 +203,14 @@ esp_err_t wifi_get_dns_info(esp_netif_dns_type_t type, esp_netif_dns_info_t* dns
 
 esp_err_t wifi_use_dhcp(void)
 {
+    wifi_control_lock();
+    esp_err_t err = wifi_use_dhcp_locked();
+    wifi_control_unlock();
+    return err;
+}
+
+static esp_err_t wifi_use_dhcp_locked(void)
+{
     esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif == NULL)
     {
@@ -180,6 +226,15 @@ esp_err_t wifi_use_dhcp(void)
 }
 
 esp_err_t wifi_use_static(const char* ip, const char* gw, const char* netmask, const char* dns1, const char* dns2)
+{
+    wifi_control_lock();
+    esp_err_t err = wifi_use_static_locked(ip, gw, netmask, dns1, dns2);
+    wifi_control_unlock();
+    return err;
+}
+
+static esp_err_t wifi_use_static_locked(const char* ip, const char* gw, const char* netmask, const char* dns1,
+                                        const char* dns2)
 {
     esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif == NULL)
@@ -246,32 +301,40 @@ esp_err_t wifi_sta_set_ap(const char* ssid, const char* password)
     strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid));
     strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password));
 
+    wifi_control_lock();
     bool auto_reconnect = wifi_get_auto_reconnect();
     wifi_set_auto_reconnect(false);
+    wifi_cancel_sta_connection();
     wifi_prepare_sta_disconnect();
 
     ESP_LOGI(TAG, "Disconnecting from current AP if connected.");
     esp_err_t err = esp_wifi_disconnect();
-    if (err != ESP_OK)
+    bool disconnect_requested = err == ESP_OK;
+    if (err == ESP_ERR_WIFI_NOT_CONNECT)
+    {
+        err = ESP_OK;
+    }
+    else if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to disconnect from current AP: %s", esp_err_to_name(err));
-        wifi_set_auto_reconnect(auto_reconnect);
-        return err;
+        goto out;
     }
 
-    if (!wifi_wait_for_sta_disconnect(5000))
+    if (disconnect_requested && !wifi_wait_for_sta_disconnect(WIFI_DISCONNECT_WAIT_MS))
+        ESP_LOGI(TAG, "No STA disconnect event received; applying new Wi-Fi config");
+
+    for (int attempt = 0; attempt < WIFI_CONFIG_RETRY_COUNT; ++attempt)
     {
-        ESP_LOGE(TAG, "Timed out waiting for Wi-Fi disconnect");
-        wifi_set_auto_reconnect(auto_reconnect);
-        return ESP_ERR_TIMEOUT;
-    }
+        err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+        if (err != ESP_ERR_WIFI_STATE)
+            break;
 
-    err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
+        vTaskDelay(pdMS_TO_TICKS(WIFI_CONFIG_RETRY_DELAY_MS));
+    }
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to set Wi-Fi config: %s", esp_err_to_name(err));
-        wifi_set_auto_reconnect(auto_reconnect);
-        return err;
+        goto out;
     }
 
     err = nconfig_write(WIFI_SSID, ssid);
@@ -280,18 +343,16 @@ esp_err_t wifi_sta_set_ap(const char* ssid, const char* password)
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to save Wi-Fi credentials: %s", esp_err_to_name(err));
-        wifi_set_auto_reconnect(auto_reconnect);
-        return err;
+        goto out;
     }
 
-    wifi_set_auto_reconnect(auto_reconnect);
-    ESP_LOGI(TAG, "Connecting to new AP...");
-    err = esp_wifi_connect();
+    wifi_reset_reconnect_backoff();
+    err = wifi_connect_locked();
     if (err != ESP_OK)
-    {
         ESP_LOGE(TAG, "Failed to start connection to new AP: %s", esp_err_to_name(err));
-        return err;
-    }
 
-    return ESP_OK;
+out:
+    wifi_set_auto_reconnect(auto_reconnect);
+    wifi_control_unlock();
+    return err;
 }

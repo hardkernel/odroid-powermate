@@ -5,8 +5,8 @@
 #include "esp_http_server.h"
 #include "esp_system.h"
 #include "esp_timer.h"
-#include "esp_wifi.h"
 #include "webserver.h"
+#include "wifi.h"
 
 static esp_err_t diagnostics_get_handler(httpd_req_t* req)
 {
@@ -57,7 +57,7 @@ static esp_err_t diagnostics_get_handler(httpd_req_t* req)
     cJSON_AddNumberToObject(root, "status_queue_drops", ws_diagnostics.status_queue_drops);
 
     wifi_ap_record_t ap_info;
-    if (esp_wifi_sta_get_ap_info(&ap_info) == ESP_OK)
+    if (wifi_get_current_ap_info(&ap_info) == ESP_OK)
     {
         cJSON_AddBoolToObject(root, "wifi_connected", true);
         cJSON_AddNumberToObject(root, "wifi_rssi", ap_info.rssi);

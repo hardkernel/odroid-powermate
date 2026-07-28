@@ -178,6 +178,19 @@ static esp_err_t setting_get_handler(httpd_req_t* req)
     wifi_ap_record_t ap_info;
     cJSON* root = cJSON_CreateObject();
 
+    wifi_sta_connection_state_t connection_state = wifi_get_sta_connection_state();
+    const char* connection_state_str = "idle";
+    if (connection_state == WIFI_STA_CONNECTION_CONNECTING)
+        connection_state_str = "connecting";
+    else if (connection_state == WIFI_STA_CONNECTION_CONNECTED)
+        connection_state_str = "connected";
+    else if (connection_state == WIFI_STA_CONNECTION_FAILED)
+        connection_state_str = "failed";
+    cJSON_AddStringToObject(root, "wifi_connection_status", connection_state_str);
+    if (connection_state == WIFI_STA_CONNECTION_FAILED)
+        cJSON_AddStringToObject(root, "wifi_failure_reason",
+                                wifi_reason_str(wifi_get_sta_connection_failure_reason()));
+
     char buf[16];
     if (nconfig_read(WIFI_MODE, buf, sizeof(buf)) == ESP_OK)
     {
@@ -396,8 +409,18 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
                 }
             }
 
-            wifi_switch_mode(mode);
-            cJSON_AddStringToObject(resp_root, "mode_status", "initiated");
+            err = wifi_switch_mode(mode);
+            if (err == ESP_OK)
+            {
+                cJSON_AddStringToObject(resp_root, "mode_status", "initiated");
+            }
+            else
+            {
+                ESP_LOGE(TAG, "Failed to switch Wi-Fi mode: %s", esp_err_to_name(err));
+                cJSON_AddStringToObject(resp_root, "mode_status", "error");
+                cJSON_AddStringToObject(resp_root, "message", esp_err_to_name(err));
+                cJSON_AddStringToObject(resp_root, "status", "error");
+            }
             action_taken = true;
         }
     }
@@ -452,8 +475,18 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
         cJSON* pass_item = cJSON_GetObjectItem(root, "password");
         if (cJSON_IsString(pass_item))
         {
-            wifi_sta_set_ap(ssid_item->valuestring, pass_item->valuestring);
-            cJSON_AddStringToObject(resp_root, "wifi_status", "connecting");
+            err = wifi_sta_set_ap(ssid_item->valuestring, pass_item->valuestring);
+            if (err == ESP_OK)
+            {
+                cJSON_AddStringToObject(resp_root, "wifi_status", "connecting");
+            }
+            else
+            {
+                ESP_LOGE(TAG, "Failed to apply Wi-Fi credentials: %s", esp_err_to_name(err));
+                cJSON_AddStringToObject(resp_root, "wifi_status", "error");
+                cJSON_AddStringToObject(resp_root, "message", esp_err_to_name(err));
+                cJSON_AddStringToObject(resp_root, "status", "error");
+            }
             action_taken = true;
         }
     }

@@ -24,7 +24,7 @@ static esp_err_t index_handler(httpd_req_t* req)
     const size_t index_html_size = (index_html_end - index_html_start);
 
     httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
-    httpd_resp_set_hdr(req, "Cache-Control", "max-age=3600");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     httpd_resp_set_type(req, "text/html");
 
     size_t remaining = index_html_size;
