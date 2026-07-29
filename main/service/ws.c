@@ -21,6 +21,7 @@
 #define UART_TX_BUFFER_SIZE 2048
 #define UART_WS_QUEUE_LENGTH 8
 #define UART_MIN_FREE_HEAP (48 * 1024)
+#define UART_WS_LRU_UPDATE_INTERVAL_MS 1000
 #define UART_TX_PIN CONFIG_GPIO_UART_TX
 #define UART_RX_PIN CONFIG_GPIO_UART_RX
 
@@ -163,6 +164,7 @@ static void ws_sender_task(void* arg)
     httpd_handle_t server = config->server;
     struct ws_message msg;
     int client_fds[MAX_CLIENT];
+    TickType_t last_lru_update = 0;
 
     while (1)
     {
@@ -179,6 +181,13 @@ static void ws_sender_task(void* arg)
         size_t clients = MAX_CLIENT;
         if (httpd_get_client_list(server, &clients, client_fds) == ESP_OK)
         {
+            TickType_t now = xTaskGetTickCount();
+            bool update_uart_lru =
+                config->uart_stream &&
+                (last_lru_update == 0 ||
+                 now - last_lru_update >= pdMS_TO_TICKS(UART_WS_LRU_UPDATE_INTERVAL_MS));
+            bool uart_lru_updated = false;
+
             cleanup_client_fds(client_fds, clients);
 
             httpd_ws_frame_t frame = {
@@ -203,7 +212,14 @@ static void ws_sender_task(void* arg)
                     ESP_LOGW(TAG, "%s: send failed for fd %d: %s", config->name, fd, esp_err_to_name(err));
                     httpd_sess_trigger_close(server, fd);
                 }
+                else if (update_uart_lru && httpd_sess_update_lru_counter(server, fd) == ESP_OK)
+                {
+                    uart_lru_updated = true;
+                }
             }
+
+            if (uart_lru_updated)
+                last_lru_update = now;
         }
         free(msg.data);
     }

@@ -13,37 +13,70 @@ const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 const baseGateway = `${protocol}//${window.location.host}/ws`;
 
 // Heartbeat related variables
+let heartbeatSocket;
 let pingIntervalId = null;
 let pongTimeoutId = null;
+let connectingSocket;
+let connectionTimeoutId = null;
+const CONNECTION_TIMEOUT = 10000; // 10 seconds: How long to wait for the WebSocket handshake
 const HEARTBEAT_INTERVAL = 10000; // 10 seconds: How often to send a 'ping'
 const HEARTBEAT_TIMEOUT = 5000; // 5 seconds: How long to wait for a 'pong' after sending a 'ping'
+
+function startConnectionTimeout(socket, onTimeout) {
+    stopConnectionTimeout();
+    connectingSocket = socket;
+    connectionTimeoutId = setTimeout(() => {
+        if (connectingSocket !== socket) return;
+        console.warn('WebSocket: Connection attempt timed out.');
+        onTimeout();
+    }, CONNECTION_TIMEOUT);
+}
+
+function stopConnectionTimeout(socket) {
+    if (socket && connectingSocket !== socket) return;
+
+    if (connectionTimeoutId) {
+        clearTimeout(connectionTimeoutId);
+        connectionTimeoutId = null;
+    }
+    connectingSocket = undefined;
+}
 
 /**
  * Starts the heartbeat mechanism.
  * Sends a 'ping' message to the server at regular intervals and sets a timeout
  * to detect if a 'pong' response is not received.
  */
-function startHeartbeat() {
+function startHeartbeat(socket, onTimeout) {
     stopHeartbeat(); // Ensure any previous heartbeat is stopped before starting a new one
+    heartbeatSocket = socket;
 
     pingIntervalId = setInterval(() => {
-        if (websocket && websocket.readyState === WebSocket.OPEN) {
-            websocket.send('ping');
+        if (heartbeatSocket !== socket || socket.readyState !== WebSocket.OPEN) return;
 
-            // Set a timeout to check if a pong is received within HEARTBEAT_TIMEOUT
-            pongTimeoutId = setTimeout(() => {
-                console.warn('WebSocket: No pong received within timeout, closing connection.');
-                // If no pong is received, close the connection. This will trigger the onClose handler.
-                websocket.close();
-            }, HEARTBEAT_TIMEOUT);
+        try {
+            socket.send('ping');
+        } catch (error) {
+            console.warn('WebSocket: Failed to send heartbeat ping.', error);
+            onTimeout();
+            return;
         }
+
+        // Set a timeout to check if a pong is received within HEARTBEAT_TIMEOUT
+        pongTimeoutId = setTimeout(() => {
+            if (heartbeatSocket !== socket) return;
+            console.warn('WebSocket: No pong received within timeout.');
+            onTimeout();
+        }, HEARTBEAT_TIMEOUT);
     }, HEARTBEAT_INTERVAL);
 }
 
 /**
  * Stops the heartbeat mechanism by clearing the ping interval and pong timeout.
  */
-function stopHeartbeat() {
+function stopHeartbeat(socket) {
+    if (socket && heartbeatSocket !== socket) return;
+
     if (pingIntervalId) {
         clearInterval(pingIntervalId);
         pingIntervalId = null;
@@ -52,6 +85,7 @@ function stopHeartbeat() {
         clearTimeout(pongTimeoutId);
         pongTimeoutId = null;
     }
+    heartbeatSocket = undefined;
 }
 
 /**
@@ -63,6 +97,11 @@ function stopHeartbeat() {
  * @param {function} [callbacks.onError] - Called when an error occurs with the WebSocket connection.
  */
 export function initWebSocket({onOpen, onClose, onMessage, onError}) {
+    if (websocket &&
+        (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING)) {
+        return;
+    }
+
     const token = localStorage.getItem('authToken');
     let gateway = baseGateway;
 
@@ -71,32 +110,78 @@ export function initWebSocket({onOpen, onClose, onMessage, onError}) {
     }
 
     console.log(`Trying to open a WebSocket connection to ${gateway}...`);
-    websocket = new WebSocket(gateway);
+    const socket = new WebSocket(gateway);
+    let closeNotified = false;
+    websocket = socket;
     // Set binary type to arraybuffer to handle raw binary data from the UART.
-    websocket.binaryType = "arraybuffer";
+    socket.binaryType = "arraybuffer";
+
+    const notifyClosed = (event) => {
+        if (closeNotified) return;
+        closeNotified = true;
+
+        stopConnectionTimeout(socket);
+        stopHeartbeat(socket);
+        if (websocket === socket) websocket = undefined;
+
+        socket.onopen = null;
+        socket.onclose = null;
+        socket.onmessage = null;
+        socket.onerror = null;
+
+        if (onClose) onClose(event);
+    };
+
+    const handleHeartbeatTimeout = () => {
+        notifyClosed({
+            type: 'heartbeat-timeout',
+            wasClean: false,
+            code: 1006,
+            reason: 'Heartbeat timeout',
+        });
+
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+            socket.close();
+        }
+    };
+
+    const handleConnectionTimeout = () => {
+        notifyClosed({
+            type: 'connection-timeout',
+            wasClean: false,
+            code: 1006,
+            reason: 'Connection timeout',
+        });
+
+        if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+            socket.close();
+        }
+    };
 
     // Assign event handlers, wrapping user-provided callbacks to include heartbeat logic
-    websocket.onopen = (event) => {
+    socket.onopen = (event) => {
+        if (websocket !== socket || closeNotified) return;
+        stopConnectionTimeout(socket);
         console.log('WebSocket connection opened.');
-        startHeartbeat(); // Start heartbeat on successful connection
+        startHeartbeat(socket, handleHeartbeatTimeout);
         if (onOpen) {
             onOpen(event);
         }
     };
 
-    websocket.onclose = (event) => {
+    socket.onclose = (event) => {
         console.log('WebSocket connection closed:', event);
-        stopHeartbeat(); // Stop heartbeat when connection closes
-        if (onClose) {
-            onClose(event);
-        }
+        notifyClosed(event);
     };
 
-    websocket.onmessage = (event) => {
+    socket.onmessage = (event) => {
+        if (websocket !== socket || closeNotified) return;
+
         if (event.data === 'pong') {
-            // Clear the timeout as pong was received, resetting for the next ping
-            clearTimeout(pongTimeoutId);
-            pongTimeoutId = null;
+            if (heartbeatSocket === socket && pongTimeoutId) {
+                clearTimeout(pongTimeoutId);
+                pongTimeoutId = null;
+            }
         } else {
             // If it's not a pong message, pass it to the user's onMessage callback
             if (onMessage) {
@@ -107,21 +192,32 @@ export function initWebSocket({onOpen, onClose, onMessage, onError}) {
         }
     };
 
-    websocket.onerror = (error) => {
+    socket.onerror = (error) => {
+        if (websocket !== socket || closeNotified) return;
         console.error('WebSocket error:', error);
         if (onError) {
             onError(error);
         }
     };
+
+    startConnectionTimeout(socket, handleConnectionTimeout);
 }
 
 /** Closes the status WebSocket without scheduling a reconnect in the caller. */
 export function closeWebSocket() {
-    stopHeartbeat();
-    if (websocket) {
-        websocket.onclose = null;
-        websocket.close();
-        websocket = undefined;
+    const socket = websocket;
+    websocket = undefined;
+    stopConnectionTimeout(socket);
+    stopHeartbeat(socket);
+    if (!socket) return;
+
+    socket.onopen = null;
+    socket.onclose = null;
+    socket.onmessage = null;
+    socket.onerror = null;
+
+    if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close();
     }
 }
 

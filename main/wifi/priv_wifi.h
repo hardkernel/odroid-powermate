@@ -19,6 +19,7 @@ void wifi_control_lock(void);
 void wifi_control_unlock(void);
 esp_err_t wifi_connect_locked(void);
 void wifi_cancel_sta_connection(void);
+void wifi_mark_sta_credentials_pending_validation(void);
 void wifi_schedule_reconnect(void);
 void wifi_reset_reconnect_backoff(void);
 void wifi_prepare_sta_disconnect(void);

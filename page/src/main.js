@@ -36,6 +36,14 @@ let isRecording = false;
 let recordedData = [];
 let recordedEvents = [];
 let mainAppInitialized = false;
+let websocketReconnectTimer = null;
+let websocketReconnectDelayMs = 2000;
+const WEBSOCKET_RECONNECT_DELAY_MAX_MS = 30000;
+let uartReconnectTimer = null;
+let uartReconnectDelayMs = 1000;
+const UART_RECONNECT_DELAY_MAX_MS = 10000;
+let browserOffline = false;
+let statusWebSocketConnected = false;
 
 // --- DOM Elements ---
 const loginContainer = document.getElementById('login-container');
@@ -67,15 +75,47 @@ const uartStreamToggleButton = document.getElementById('uart-stream-toggle-butto
 
 let uartStreamPaused = false;
 
-function updateUartStream() {
+function shouldUartStreamBeActive() {
     const deviceTabActive = document.getElementById('terminal-tab-pane')?.classList.contains('active');
-    const shouldStream = !uartStreamPaused && deviceTabActive && document.visibilityState === 'visible';
+    return !browserOffline && !uartStreamPaused && deviceTabActive && document.visibilityState === 'visible';
+}
 
-    if (shouldStream) {
-        connectUartStream((event) => {
-            if (event.data instanceof ArrayBuffer && term) term.write(new Uint8Array(event.data));
+function clearUartReconnectTimer() {
+    if (uartReconnectTimer) {
+        clearTimeout(uartReconnectTimer);
+        uartReconnectTimer = null;
+    }
+}
+
+function scheduleUartReconnect() {
+    if (uartReconnectTimer || !shouldUartStreamBeActive()) return;
+
+    const delayMs = uartReconnectDelayMs;
+    uartReconnectDelayMs = Math.min(uartReconnectDelayMs * 2, UART_RECONNECT_DELAY_MAX_MS);
+    console.warn(`UART connection closed. Reconnecting in ${delayMs} ms...`);
+    uartReconnectTimer = setTimeout(() => {
+        uartReconnectTimer = null;
+        updateUartStream();
+    }, delayMs);
+}
+
+function updateUartStream() {
+    if (shouldUartStreamBeActive()) {
+        connectUartStream({
+            onOpen: () => {
+                clearUartReconnectTimer();
+                uartReconnectDelayMs = 1000;
+            },
+            onMessage: (event) => {
+                if (event.data instanceof ArrayBuffer && term) term.write(new Uint8Array(event.data));
+            },
+            onClose: () => {
+                scheduleUartReconnect();
+            },
         });
     } else {
+        clearUartReconnectTimer();
+        uartReconnectDelayMs = 1000;
         disconnectUartStream();
     }
 }
@@ -84,18 +124,71 @@ function updateUartStream() {
 // --- WebSocket Event Handlers ---
 
 function onWsOpen() {
+    browserOffline = false;
+    statusWebSocketConnected = true;
+    if (websocketReconnectTimer) {
+        clearTimeout(websocketReconnectTimer);
+        websocketReconnectTimer = null;
+    }
+    websocketReconnectDelayMs = 2000;
     updateWebsocketStatus(true);
     console.log('Connected to WebSocket Server');
     updateUartStream();
 }
 
 function onWsClose() {
-    updateWebsocketStatus(false);
-    disconnectUartStream();
-    if (!checkAuth()) return;
+    statusWebSocketConnected = false;
+    if (!checkAuth()) {
+        updateWebsocketStatus('offline');
+        return;
+    }
 
-    console.warn('Connection closed. Reconnecting...');
-    setTimeout(connect, 2000);
+    if (browserOffline) {
+        updateWebsocketStatus('offline');
+        return;
+    }
+
+    updateWebsocketStatus('reconnecting');
+    if (websocketReconnectTimer) return;
+
+    const delayMs = websocketReconnectDelayMs;
+    websocketReconnectDelayMs = Math.min(websocketReconnectDelayMs * 2, WEBSOCKET_RECONNECT_DELAY_MAX_MS);
+    console.warn(`Connection closed. Reconnecting in ${delayMs} ms...`);
+    websocketReconnectTimer = setTimeout(() => {
+        websocketReconnectTimer = null;
+        connect();
+    }, delayMs);
+}
+
+function handleBrowserOffline() {
+    browserOffline = true;
+    statusWebSocketConnected = false;
+    if (websocketReconnectTimer) {
+        clearTimeout(websocketReconnectTimer);
+        websocketReconnectTimer = null;
+    }
+
+    closeWebSocket();
+    updateUartStream();
+    updateWebsocketStatus('offline');
+}
+
+function handleBrowserOnline() {
+    browserOffline = false;
+    if (!checkAuth()) return;
+    if (statusWebSocketConnected) {
+        updateWebsocketStatus(true);
+        return;
+    }
+
+    if (websocketReconnectTimer) {
+        clearTimeout(websocketReconnectTimer);
+        websocketReconnectTimer = null;
+    }
+    websocketReconnectDelayMs = 2000;
+    updateWebsocketStatus('reconnecting');
+    connect();
+    updateUartStream();
 }
 
 /**
@@ -232,6 +325,14 @@ async function handleLogin(event) {
 
 function handleLogout() {
     localStorage.removeItem('authToken');
+    statusWebSocketConnected = false;
+    if (websocketReconnectTimer) {
+        clearTimeout(websocketReconnectTimer);
+        websocketReconnectTimer = null;
+    }
+    websocketReconnectDelayMs = 2000;
+    clearUartReconnectTimer();
+    uartReconnectDelayMs = 1000;
     disconnectUartStream();
     closeWebSocket();
     // Hide main content and show login form
@@ -472,6 +573,8 @@ function initializeMainAppContent(versionData = null) {
         updateUartStream();
     });
     document.addEventListener('visibilitychange', updateUartStream);
+    window.addEventListener('offline', handleBrowserOffline);
+    window.addEventListener('online', handleBrowserOnline);
     document.querySelectorAll('button[data-bs-toggle="tab"]').forEach((tab) => {
         tab.addEventListener('shown.bs.tab', updateUartStream);
     });

@@ -506,18 +506,23 @@ export function handleResize() {
 
 /**
  * Updates the WebSocket connection status indicator in the header.
- * @param {boolean} isConnected - True if the WebSocket is connected, false otherwise.
+ * @param {boolean|string} state - True/'online', false/'offline', or 'reconnecting'.
  */
-export function updateWebsocketStatus(isConnected) {
-    if (isConnected) {
+export function updateWebsocketStatus(state) {
+    const normalizedState = state === true ? 'online' : state === false ? 'offline' : state;
+    dom.websocketStatus.classList.remove('text-success', 'text-danger');
+
+    if (normalizedState === 'online') {
         dom.websocketStatusText.textContent = 'Online';
         dom.websocketIcon.className = 'bi bi-check-circle-fill me-2';
-        dom.websocketStatus.classList.remove('text-danger');
         dom.websocketStatus.classList.add('text-success');
+    } else if (normalizedState === 'reconnecting') {
+        dom.websocketStatusText.textContent = 'Offline · Reconnecting…';
+        dom.websocketIcon.className = 'bi bi-arrow-repeat me-2';
+        dom.websocketStatus.classList.add('text-danger');
     } else {
         dom.websocketStatusText.textContent = 'Offline';
         dom.websocketIcon.className = 'bi bi-x-circle-fill me-2';
-        dom.websocketStatus.classList.remove('text-success');
         dom.websocketStatus.classList.add('text-danger');
     }
 }

@@ -25,6 +25,7 @@ static SemaphoreHandle_t s_wifi_control_mutex;
 static TaskHandle_t s_reconnect_task;
 static volatile bool s_sta_connect_requested;
 static volatile bool s_sta_connected;
+static volatile bool s_sta_credentials_pending_validation;
 static volatile wifi_sta_connection_state_t s_sta_connection_state = WIFI_STA_CONNECTION_IDLE;
 static volatile wifi_err_reason_t s_sta_connection_failure_reason = WIFI_REASON_UNSPECIFIED;
 static volatile uint32_t s_reconnect_delay_ms = 1000;
@@ -85,6 +86,11 @@ void wifi_cancel_sta_connection(void)
     wifi_set_sta_connection_state(WIFI_STA_CONNECTION_IDLE, WIFI_REASON_UNSPECIFIED);
 }
 
+void wifi_mark_sta_credentials_pending_validation(void)
+{
+    s_sta_credentials_pending_validation = true;
+}
+
 void wifi_schedule_reconnect(void)
 {
     if (s_reconnect_task)
@@ -127,12 +133,18 @@ static void wifi_reconnect_task(void* arg)
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
 
         wifi_control_lock();
+        wifi_mode_t mode;
+        bool sta_mode_enabled =
+            esp_wifi_get_mode(&mode) == ESP_OK && (mode == WIFI_MODE_STA || mode == WIFI_MODE_APSTA);
         if (s_auto_reconnect && !nconfig_value_is_not_set(WIFI_SSID) && !s_sta_connect_requested &&
-            s_sta_connection_state != WIFI_STA_CONNECTION_FAILED)
+            s_sta_connection_state != WIFI_STA_CONNECTION_FAILED && sta_mode_enabled)
         {
             esp_err_t err = wifi_connect_locked();
             if (err != ESP_OK)
+            {
                 ESP_LOGW(TAG, "Reconnect request failed: %s", esp_err_to_name(err));
+                wifi_schedule_reconnect();
+            }
         }
         wifi_control_unlock();
     }
@@ -192,7 +204,10 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
             xEventGroupSetBits(s_sta_event_group, STA_DISCONNECTED_BIT);
         ESP_LOGW(TAG, "Disconnected from AP, reason: %s (%u)", wifi_reason_str(event->reason), event->reason);
 
-        bool configuration_error = reconnect_is_configuration_error(event->reason);
+        // Only reject credentials while validating a newly submitted configuration.
+        // A previously working connection must keep retrying after transient RF errors.
+        bool configuration_error =
+            s_sta_credentials_pending_validation && reconnect_is_configuration_error(event->reason);
         if (configuration_error)
         {
             wifi_set_sta_connection_state(WIFI_STA_CONNECTION_FAILED, event->reason);
@@ -220,6 +235,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
     {
         s_sta_connect_requested = true;
         s_sta_connected = true;
+        s_sta_credentials_pending_validation = false;
         wifi_set_sta_connection_state(WIFI_STA_CONNECTION_CONNECTED, WIFI_REASON_UNSPECIFIED);
         wifi_reset_reconnect_backoff();
         led_set(LED_BLU, BLINK_SOLID);

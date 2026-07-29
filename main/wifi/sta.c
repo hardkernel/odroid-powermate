@@ -346,7 +346,9 @@ esp_err_t wifi_sta_set_ap(const char* ssid, const char* password)
         goto out;
     }
 
+    wifi_mark_sta_credentials_pending_validation();
     wifi_reset_reconnect_backoff();
+    wifi_set_auto_reconnect(auto_reconnect);
     err = wifi_connect_locked();
     if (err != ESP_OK)
         ESP_LOGE(TAG, "Failed to start connection to new AP: %s", esp_err_to_name(err));

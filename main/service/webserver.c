@@ -173,6 +173,11 @@ void start_webserver(void)
     config.max_uri_handlers = 12;
     config.task_priority = 12;
     config.max_open_sockets = POWERMATE_HTTP_MAX_OPEN_SOCKETS;
+    config.lru_purge_enable = true;
+    config.keep_alive_enable = true;
+    config.keep_alive_idle = 15;
+    config.keep_alive_interval = 5;
+    config.keep_alive_count = 3;
 
     if (httpd_start(&server, &config) != ESP_OK)
     {
