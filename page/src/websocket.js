@@ -7,6 +7,7 @@
 
 // The WebSocket instance, exported for potential direct access if needed.
 export let websocket;
+let lastStatusMessageReceivedAtMs = 0;
 
 // The WebSocket server address, derived from the current page's host (hostname + port).
 const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -183,6 +184,7 @@ export function initWebSocket({onOpen, onClose, onMessage, onError}) {
                 pongTimeoutId = null;
             }
         } else {
+            lastStatusMessageReceivedAtMs = Date.now();
             // If it's not a pong message, pass it to the user's onMessage callback
             if (onMessage) {
                 onMessage(event);
@@ -219,6 +221,10 @@ export function closeWebSocket() {
     if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
         socket.close();
     }
+}
+
+export function getLastStatusMessageReceivedAtMs() {
+    return lastStatusMessageReceivedAtMs;
 }
 
 /**

@@ -11,6 +11,7 @@ import {getAuthHeaders, handleResponse} from './api.js'; // Import auth function
 import * as ui from './ui.js';
 import {clearTerminal, downloadTerminalOutput, fitTerminal} from './terminal.js';
 import {debounce, isMobile} from './utils.js';
+import {getLastStatusMessageReceivedAtMs} from './websocket.js';
 
 // A flag to track if charts have been initialized
 let chartsInitialized = false;
@@ -41,6 +42,26 @@ function formatUptime(seconds) {
     return days > 0 ? `${days}d ${hours}h ${minutes}m` : `${hours}h ${minutes}m ${remainingSeconds}s`;
 }
 
+function formatElapsedSeconds(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0) return '-';
+
+    const wholeSeconds = Math.floor(seconds);
+    const days = Math.floor(wholeSeconds / 86400);
+    const hours = Math.floor((wholeSeconds % 86400) / 3600);
+    const minutes = Math.floor((wholeSeconds % 3600) / 60);
+    const remainingSeconds = wholeSeconds % 60;
+
+    if (days > 0) return `${days}d ${hours}h`;
+    if (hours > 0) return `${hours}h ${minutes}m`;
+    if (minutes > 0) return `${minutes}m ${remainingSeconds}s`;
+    return `${remainingSeconds}s`;
+}
+
+function formatState(state) {
+    if (!state) return 'Unknown';
+    return state.charAt(0).toUpperCase() + state.slice(1);
+}
+
 async function refreshDiagnostics() {
     if (!dom.diagnosticsRefreshButton || diagnosticsRequestInFlight) return;
 
@@ -63,6 +84,48 @@ async function refreshDiagnostics() {
         dom.diagnosticsQueueDrops.textContent = `UART ${data.uart_queue_drops}, status ${data.status_queue_drops}`;
         dom.diagnosticsWsFailures.textContent = data.websocket_send_failures;
         dom.diagnosticsWifi.textContent = data.wifi_connected ? `Connected (${data.wifi_rssi} dBm)` : 'Disconnected';
+
+        const staState = data.wifi_sta_state || 'unknown';
+        dom.diagnosticsWifiStaState.textContent = formatState(staState);
+
+        const disconnectReason = data.wifi_last_disconnect_reason;
+        dom.diagnosticsWifiLastDisconnect.textContent = disconnectReason
+            ? `${disconnectReason} (${data.wifi_last_disconnect_reason_code})`
+            : 'None';
+
+        const reconnectBackoffMs = Number(data.wifi_reconnect_backoff_ms);
+        if (staState === 'connecting') {
+            dom.diagnosticsWifiBackoff.textContent = reconnectBackoffMs > 0
+                ? `${(reconnectBackoffMs / 1000).toFixed(1)} s`
+                : 'Connecting now';
+        } else {
+            dom.diagnosticsWifiBackoff.textContent = 'Inactive';
+        }
+
+        if (data.wifi_has_connected && Number.isFinite(data.wifi_last_connected_uptime_seconds)) {
+            const connectedAgeSeconds = Math.max(
+                0, data.uptime_seconds - data.wifi_last_connected_uptime_seconds);
+            dom.diagnosticsWifiLastConnected.textContent =
+                `${formatElapsedSeconds(connectedAgeSeconds)} ago`;
+        } else {
+            dom.diagnosticsWifiLastConnected.textContent = 'Never';
+        }
+
+        const netType = data.wifi_net_type === 'static'
+            ? 'Static'
+            : data.wifi_net_type === 'dhcp' ? 'DHCP' : 'Unknown';
+        dom.diagnosticsWifiNetwork.textContent =
+            `${netType} · ${data.wifi_ip_address || 'No IP'}`;
+        dom.diagnosticsWifiRoute.textContent =
+            data.wifi_gateway && data.wifi_netmask
+                ? `${data.wifi_gateway} / ${data.wifi_netmask}`
+                : '-';
+
+        const lastStatusMessageAtMs = getLastStatusMessageReceivedAtMs();
+        dom.diagnosticsLastStatusMessage.textContent = lastStatusMessageAtMs > 0
+            ? `${formatElapsedSeconds(Math.max(0, Date.now() - lastStatusMessageAtMs) / 1000)} ago`
+            : 'Not received';
+
         dom.diagnosticsStatus.textContent =
             `Updated ${new Date().toLocaleTimeString()} (auto-refresh: ${DIAGNOSTICS_REFRESH_INTERVAL_MS / 1000} s)`;
     } catch (error) {

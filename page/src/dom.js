@@ -44,6 +44,13 @@ export const diagnosticsUartErrors = document.getElementById('diagnostics-uart-e
 export const diagnosticsQueueDrops = document.getElementById('diagnostics-queue-drops');
 export const diagnosticsWsFailures = document.getElementById('diagnostics-ws-failures');
 export const diagnosticsWifi = document.getElementById('diagnostics-wifi');
+export const diagnosticsWifiStaState = document.getElementById('diagnostics-wifi-sta-state');
+export const diagnosticsWifiLastDisconnect = document.getElementById('diagnostics-wifi-last-disconnect');
+export const diagnosticsWifiBackoff = document.getElementById('diagnostics-wifi-backoff');
+export const diagnosticsWifiLastConnected = document.getElementById('diagnostics-wifi-last-connected');
+export const diagnosticsWifiNetwork = document.getElementById('diagnostics-wifi-network');
+export const diagnosticsWifiRoute = document.getElementById('diagnostics-wifi-route');
+export const diagnosticsLastStatusMessage = document.getElementById('diagnostics-last-status-message');
 
 
 // --- WebSocket Status Elements ---

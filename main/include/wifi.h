@@ -4,6 +4,8 @@
 
 #ifndef WIFI_H
 #define WIFI_H
+#include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 #include "esp_netif_types.h"
 #include "esp_wifi_types_generic.h"
@@ -20,6 +22,15 @@ typedef enum
     WIFI_STA_CONNECTION_CONNECTED,
     WIFI_STA_CONNECTION_FAILED,
 } wifi_sta_connection_state_t;
+
+typedef struct
+{
+    wifi_sta_connection_state_t connection_state;
+    wifi_err_reason_t last_disconnect_reason;
+    uint32_t reconnect_backoff_ms;
+    uint32_t last_connected_uptime_seconds;
+    bool has_connected;
+} wifi_sta_diagnostics_t;
 
 /**
  * @brief Converts a Wi-Fi authentication mode enum to its string representation.
@@ -77,6 +88,11 @@ wifi_sta_connection_state_t wifi_get_sta_connection_state(void);
  * @brief Gets the reason for the last terminal STA connection failure.
  */
 wifi_err_reason_t wifi_get_sta_connection_failure_reason(void);
+
+/**
+ * @brief Gets a snapshot of the current STA diagnostic state.
+ */
+void wifi_get_sta_diagnostics(wifi_sta_diagnostics_t* diagnostics);
 
 /**
  * @brief Gets the DNS server information for the STA interface.

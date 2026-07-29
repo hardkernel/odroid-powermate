@@ -3,10 +3,28 @@
 #include <stdlib.h>
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
+#include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "nconfig.h"
 #include "webserver.h"
 #include "wifi.h"
+
+static const char* wifi_sta_state_str(wifi_sta_connection_state_t state)
+{
+    switch (state)
+    {
+    case WIFI_STA_CONNECTION_CONNECTING:
+        return "connecting";
+    case WIFI_STA_CONNECTION_CONNECTED:
+        return "connected";
+    case WIFI_STA_CONNECTION_FAILED:
+        return "failed";
+    case WIFI_STA_CONNECTION_IDLE:
+    default:
+        return "idle";
+    }
+}
 
 static esp_err_t diagnostics_get_handler(httpd_req_t* req)
 {
@@ -56,8 +74,33 @@ static esp_err_t diagnostics_get_handler(httpd_req_t* req)
     cJSON_AddNumberToObject(root, "uart_queue_drops", ws_diagnostics.uart_queue_drops);
     cJSON_AddNumberToObject(root, "status_queue_drops", ws_diagnostics.status_queue_drops);
 
+    wifi_sta_diagnostics_t wifi_diagnostics;
+    wifi_get_sta_diagnostics(&wifi_diagnostics);
+    cJSON_AddStringToObject(root, "wifi_sta_state",
+                            wifi_sta_state_str(wifi_diagnostics.connection_state));
+    cJSON_AddStringToObject(
+        root, "wifi_last_disconnect_reason",
+        wifi_diagnostics.last_disconnect_reason == WIFI_REASON_UNSPECIFIED
+            ? ""
+            : wifi_reason_str(wifi_diagnostics.last_disconnect_reason));
+    cJSON_AddNumberToObject(root, "wifi_last_disconnect_reason_code",
+                            wifi_diagnostics.last_disconnect_reason);
+    cJSON_AddNumberToObject(
+        root, "wifi_reconnect_backoff_ms",
+        wifi_diagnostics.connection_state == WIFI_STA_CONNECTION_CONNECTING
+            ? wifi_diagnostics.reconnect_backoff_ms
+            : 0);
+    cJSON_AddBoolToObject(root, "wifi_has_connected", wifi_diagnostics.has_connected);
+    cJSON_AddNumberToObject(root, "wifi_last_connected_uptime_seconds",
+                            wifi_diagnostics.last_connected_uptime_seconds);
+
+    char net_type[16] = "dhcp";
+    nconfig_read(NETIF_TYPE, net_type, sizeof(net_type));
+    cJSON_AddStringToObject(root, "wifi_net_type", net_type);
+
     wifi_ap_record_t ap_info;
-    if (wifi_get_current_ap_info(&ap_info) == ESP_OK)
+    bool wifi_connected = wifi_get_current_ap_info(&ap_info) == ESP_OK;
+    if (wifi_connected)
     {
         cJSON_AddBoolToObject(root, "wifi_connected", true);
         cJSON_AddNumberToObject(root, "wifi_rssi", ap_info.rssi);
@@ -66,6 +109,21 @@ static esp_err_t diagnostics_get_handler(httpd_req_t* req)
     {
         cJSON_AddBoolToObject(root, "wifi_connected", false);
     }
+
+    char ip_address[16] = "";
+    char gateway[16] = "";
+    char netmask[16] = "";
+    esp_netif_ip_info_t ip_info;
+    if (wifi_diagnostics.connection_state == WIFI_STA_CONNECTION_CONNECTED &&
+        wifi_get_current_ip_info(&ip_info) == ESP_OK)
+    {
+        esp_ip4addr_ntoa(&ip_info.ip, ip_address, sizeof(ip_address));
+        esp_ip4addr_ntoa(&ip_info.gw, gateway, sizeof(gateway));
+        esp_ip4addr_ntoa(&ip_info.netmask, netmask, sizeof(netmask));
+    }
+    cJSON_AddStringToObject(root, "wifi_ip_address", ip_address);
+    cJSON_AddStringToObject(root, "wifi_gateway", gateway);
+    cJSON_AddStringToObject(root, "wifi_netmask", netmask);
 
     char* response = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);

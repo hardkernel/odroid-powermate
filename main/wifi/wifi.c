@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -28,7 +29,11 @@ static volatile bool s_sta_connected;
 static volatile bool s_sta_credentials_pending_validation;
 static volatile wifi_sta_connection_state_t s_sta_connection_state = WIFI_STA_CONNECTION_IDLE;
 static volatile wifi_err_reason_t s_sta_connection_failure_reason = WIFI_REASON_UNSPECIFIED;
+static volatile wifi_err_reason_t s_sta_last_disconnect_reason = WIFI_REASON_UNSPECIFIED;
 static volatile uint32_t s_reconnect_delay_ms = 1000;
+static volatile uint32_t s_reconnect_backoff_ms;
+static volatile uint32_t s_last_connected_uptime_seconds;
+static volatile bool s_sta_has_connected;
 
 #define STA_DISCONNECTED_BIT BIT0
 #define RECONNECT_DELAY_MIN_MS 1000
@@ -41,6 +46,18 @@ bool wifi_get_auto_reconnect(void) { return s_auto_reconnect; }
 bool wifi_sta_is_connected(void) { return s_sta_connected; }
 wifi_sta_connection_state_t wifi_get_sta_connection_state(void) { return s_sta_connection_state; }
 wifi_err_reason_t wifi_get_sta_connection_failure_reason(void) { return s_sta_connection_failure_reason; }
+
+void wifi_get_sta_diagnostics(wifi_sta_diagnostics_t* diagnostics)
+{
+    if (!diagnostics)
+        return;
+
+    diagnostics->connection_state = s_sta_connection_state;
+    diagnostics->last_disconnect_reason = s_sta_last_disconnect_reason;
+    diagnostics->reconnect_backoff_ms = s_reconnect_backoff_ms;
+    diagnostics->last_connected_uptime_seconds = s_last_connected_uptime_seconds;
+    diagnostics->has_connected = s_sta_has_connected;
+}
 
 static void wifi_set_sta_connection_state(wifi_sta_connection_state_t state, wifi_err_reason_t reason)
 {
@@ -62,6 +79,7 @@ void wifi_control_unlock(void)
 void wifi_reset_reconnect_backoff(void)
 {
     s_reconnect_delay_ms = RECONNECT_DELAY_MIN_MS;
+    s_reconnect_backoff_ms = 0;
 }
 
 esp_err_t wifi_connect_locked(void)
@@ -130,7 +148,9 @@ static void wifi_reconnect_task(void* arg)
             s_reconnect_delay_ms *= 2;
         else
             s_reconnect_delay_ms = RECONNECT_DELAY_MAX_MS;
+        s_reconnect_backoff_ms = delay_ms;
         vTaskDelay(pdMS_TO_TICKS(delay_ms));
+        s_reconnect_backoff_ms = 0;
 
         wifi_control_lock();
         wifi_mode_t mode;
@@ -200,6 +220,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
         wifi_event_sta_disconnected_t* event = (wifi_event_sta_disconnected_t*)event_data;
         s_sta_connect_requested = false;
         s_sta_connected = false;
+        s_sta_last_disconnect_reason = event->reason;
         if (s_sta_event_group)
             xEventGroupSetBits(s_sta_event_group, STA_DISCONNECTED_BIT);
         ESP_LOGW(TAG, "Disconnected from AP, reason: %s (%u)", wifi_reason_str(event->reason), event->reason);
@@ -238,6 +259,8 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
         s_sta_credentials_pending_validation = false;
         wifi_set_sta_connection_state(WIFI_STA_CONNECTION_CONNECTED, WIFI_REASON_UNSPECIFIED);
         wifi_reset_reconnect_backoff();
+        s_last_connected_uptime_seconds = (uint32_t)(esp_timer_get_time() / 1000000ULL);
+        s_sta_has_connected = true;
         led_set(LED_BLU, BLINK_SOLID);
         ip_event_got_ip_t* event = (ip_event_got_ip_t*)event_data;
         ESP_LOGI(TAG, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
