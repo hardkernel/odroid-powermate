@@ -34,8 +34,8 @@ sudo apt install nodejs npm nanopb
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://git.sys114.com/shinys000114/odroid-power-mate.git
-    cd odroid-power-mate
+    git clone https://github.com/hardkernel/odroid-powermate.git
+    cd odroid-powermate
     ```
 2.  **Set up the ESP-IDF environment:**
     Open a terminal and source the ESP-IDF export script. The path may vary depending on your installation location.
