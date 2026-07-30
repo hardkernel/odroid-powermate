@@ -28,6 +28,20 @@ type uartMenuItem struct {
 	description string
 }
 
+const (
+	uartMenuItemResume = iota
+	uartMenuItemSendCtrlT
+	uartMenuItemMain
+	uartMenuItemUSB
+	uartMenuItemPower
+	uartMenuItemReset
+	uartMenuItemBaud
+	uartMenuItemClear
+	uartMenuItemSave
+	uartMenuItemExit
+	uartMenuItemQuit
+)
+
 var baudRates = []string{
 	"9600", "19200", "38400", "57600", "115200",
 	"230400", "460800", "921600", "1500000",
@@ -40,6 +54,7 @@ func (t *tui) uartMenuItems() []uartMenuItem {
 	}
 	return []uartMenuItem{
 		{"g", "Resume terminal", connection},
+		{"t", "Send Ctrl+T and resume", "Send literal Ctrl+T (0x14) to the target"},
 		{"m", "Toggle MAIN and resume", "Current state: " + plainStateWord(t.switches.Main)},
 		{"u", "Toggle USB and resume", "Current state: " + plainStateWord(t.switches.USB)},
 		{"p", "Power action", "Requires confirmation"},
@@ -67,7 +82,7 @@ func (t *tui) handleUARTMenuKey(key tea.KeyPressMsg) tea.Cmd {
 		return nil
 	case "esc", "g":
 		return t.beginUART(nil, false)
-	case "ctrl+t":
+	case "ctrl+t", "t":
 		return t.beginUART([]byte{uartMenuByte}, false)
 	case "m":
 		return t.runUARTActionAndResume(
@@ -100,42 +115,44 @@ func (t *tui) runUARTActionAndResume(action tea.Cmd) tea.Cmd {
 
 func (t *tui) activateUARTMenuItem(index int) tea.Cmd {
 	switch index {
-	case 0:
+	case uartMenuItemResume:
 		return t.beginUART(nil, false)
-	case 1:
+	case uartMenuItemSendCtrlT:
+		return t.beginUART([]byte{uartMenuByte}, false)
+	case uartMenuItemMain:
 		return t.runUARTActionAndResume(
 			t.setOutputCmd("MAIN", !t.switches.Main),
 		)
-	case 2:
+	case uartMenuItemUSB:
 		return t.runUARTActionAndResume(
 			t.setOutputCmd("USB", !t.switches.USB),
 		)
-	case 3:
+	case uartMenuItemPower:
 		t.confirm = &confirmation{
 			message: "Trigger the Power action?",
 			action:  confirmPower,
 		}
-	case 4:
+	case uartMenuItemReset:
 		t.confirm = &confirmation{
 			message: "Trigger the Reset action?",
 			action:  confirmReset,
 		}
-	case 5:
+	case uartMenuItemBaud:
 		t.uartMenu.mode = uartMenuBaud
 		t.uartMenu.selected = 4
-	case 6:
+	case uartMenuItemClear:
 		t.uartLog.Reset()
 		return t.beginUART(nil, true)
-	case 7:
+	case uartMenuItemSave:
 		return func() tea.Msg {
 			filename, err := saveUARTLog(&t.uartLog)
 			return uartLogSavedMsg{filename: filename, err: err}
 		}
-	case 8:
+	case uartMenuItemExit:
 		t.stopUART()
 		t.activePage = pageDashboard
 		t.uartMenu = uartMenuState{}
-	case 9:
+	case uartMenuItemQuit:
 		return tea.Quit
 	}
 	return nil
@@ -150,11 +167,11 @@ func (t *tui) handleUARTBaudKey(key tea.KeyPressMsg) tea.Cmd {
 		t.uartMenu.selected = (t.uartMenu.selected + 1) % len(baudRates)
 	case "esc", "b":
 		t.uartMenu.mode = uartMenuMain
-		t.uartMenu.selected = 5
+		t.uartMenu.selected = uartMenuItemBaud
 	case "enter":
 		baudRate := baudRates[t.uartMenu.selected]
 		t.uartMenu.mode = uartMenuMain
-		t.uartMenu.selected = 5
+		t.uartMenu.selected = uartMenuItemBaud
 		return t.setBaudRateCmd(baudRate)
 	}
 	return nil
@@ -210,7 +227,7 @@ func (t *tui) renderUARTMenu(width, height int) string {
 		"",
 		lipgloss.NewStyle().
 			Foreground(lipgloss.Color("244")).
-			Render("Ctrl+T sends literal Ctrl+T · Esc resumes terminal"),
+			Render("[t] or Ctrl+T sends literal Ctrl+T · [g] or Esc resumes terminal"),
 	)
 	if t.notice != "" {
 		lines = append(

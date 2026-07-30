@@ -109,8 +109,8 @@ terminal directly.
 Press `Ctrl+T` to leave the raw session and open the Bubble Tea UART menu for
 output control, Power/Reset actions, changing the baud rate, clearing/saving
 the local UART buffer, leaving the terminal, or quitting the program. Press
-`Ctrl+T` again from the menu to reconnect and send a literal `Ctrl+T` (`0x14`)
-to the target. Press `g` or `Esc` to reconnect without sending it.
+`t` (or `Ctrl+T` again) from the menu to reconnect and send a literal `Ctrl+T`
+(`0x14`) to the target. Press `g` or `Esc` to reconnect without sending it.
 Press `m` or `u` to toggle the corresponding output and immediately resume the
 raw UART terminal.
 
