@@ -79,6 +79,11 @@ sudo apt install nodejs npm nanopb
 3.  Open a web browser and navigate to the device's IP address.
 4.  You should now see the ODROID Remote control panel.
 
+## Examples
+
+- [Power data logger](example/logger)
+- [PMTUI](example/pmtui)
+
 ## Docs
 
 - Hardkernel WiKi: [https://wiki.odroid.com/accessory/powermate](https://wiki.odroid.com/accessory/powermate)
