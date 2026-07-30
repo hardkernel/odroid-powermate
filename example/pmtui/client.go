@@ -76,6 +76,45 @@ type diagnostics struct {
 	WiFiNetmask         string `json:"wifi_netmask"`
 }
 
+type settingIPInfo struct {
+	IP      string `json:"ip"`
+	Gateway string `json:"gateway"`
+	Subnet  string `json:"subnet"`
+	DNS1    string `json:"dns1"`
+	DNS2    string `json:"dns2"`
+}
+
+type deviceSettings struct {
+	WiFiConnectionStatus string         `json:"wifi_connection_status"`
+	WiFiFailureReason    string         `json:"wifi_failure_reason"`
+	Mode                 string         `json:"mode"`
+	NetworkType          string         `json:"net_type"`
+	BaudRate             string         `json:"baudrate"`
+	Period               string         `json:"period"`
+	RestoreOutputState   bool           `json:"restore_output_state"`
+	VINLimit             float64        `json:"vin_current_limit"`
+	MAINLimit            float64        `json:"main_current_limit"`
+	USBLimit             float64        `json:"usb_current_limit"`
+	VINCriticalLimit     float64        `json:"vin_critical_current_limit"`
+	MAINCriticalLimit    float64        `json:"main_critical_current_limit"`
+	USBCriticalLimit     float64        `json:"usb_critical_current_limit"`
+	Connected            bool           `json:"connected"`
+	SSID                 string         `json:"ssid"`
+	RSSI                 int32          `json:"rssi"`
+	IP                   *settingIPInfo `json:"ip"`
+}
+
+type wifiAccessPoint struct {
+	SSID     string `json:"ssid"`
+	RSSI     int32  `json:"rssi"`
+	AuthMode string `json:"authmode"`
+}
+
+type settingResponse struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
+}
+
 func newClient(host, username, password string) (*client, error) {
 	host = strings.TrimSpace(host)
 	if host == "" {
@@ -117,6 +156,12 @@ func (c *client) SetCredentials(username, password string) {
 	c.tokenMu.Lock()
 	c.token = ""
 	c.tokenMu.Unlock()
+}
+
+func (c *client) Username() string {
+	c.loginMu.Lock()
+	defer c.loginMu.Unlock()
+	return c.username
 }
 
 func (c *client) Login(ctx context.Context) error {
@@ -185,7 +230,33 @@ func (c *client) GetDiagnostics(ctx context.Context) (diagnostics, error) {
 }
 
 func (c *client) SetSetting(ctx context.Context, payload map[string]any) error {
-	return c.doJSON(ctx, http.MethodPost, "/api/setting", payload, nil, true)
+	var result settingResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/api/setting", payload, &result, true); err != nil {
+		return err
+	}
+	if result.Status == "error" {
+		if result.Message != "" {
+			return errors.New(result.Message)
+		}
+		return errors.New("device rejected the setting")
+	}
+	return nil
+}
+
+func (c *client) GetSettings(ctx context.Context) (deviceSettings, error) {
+	var result deviceSettings
+	err := c.doJSON(ctx, http.MethodGet, "/api/setting", nil, &result, true)
+	return result, err
+}
+
+func (c *client) ScanWiFi(ctx context.Context) ([]wifiAccessPoint, error) {
+	var result []wifiAccessPoint
+	err := c.doJSON(ctx, http.MethodGet, "/api/wifi/scan", nil, &result, true)
+	return result, err
+}
+
+func (c *client) Reboot(ctx context.Context) error {
+	return c.doJSON(ctx, http.MethodPost, "/api/reboot", nil, nil, true)
 }
 
 func (c *client) doJSON(

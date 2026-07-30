@@ -25,6 +25,7 @@ const (
 	pageEvents
 	pageDebug
 	pageUART
+	pageSettings
 )
 
 type confirmAction uint8
@@ -33,6 +34,11 @@ const (
 	confirmPower confirmAction = iota
 	confirmReset
 	confirmClearEvents
+	confirmSettingsWiFi
+	confirmSettingsNetwork
+	confirmSettingsAPMode
+	confirmSettingsUser
+	confirmSettingsReboot
 )
 
 type confirmation struct {
@@ -132,6 +138,7 @@ type tui struct {
 	uartLog  uartLog
 	uart     *uartBridge
 	uartMenu uartMenuState
+	settings settingsModel
 
 	statusCh     chan tea.Msg
 	sensorMu     sync.Mutex
@@ -169,6 +176,7 @@ func newTUI(
 		version:    "unknown",
 		eventsView: events,
 		debugView:  debug,
+		settings:   newSettingsModel(),
 		statusCh:   make(chan tea.Msg, 256),
 	}
 }
@@ -269,6 +277,59 @@ func (t *tui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			t.notice = message.success
 		}
+	case settingsResultMsg:
+		t.settings.loading = false
+		if message.err != nil {
+			t.notice = "Settings query failed: " + message.err.Error()
+		} else {
+			t.settings.load(message.data, t.client.Username())
+			t.notice = "Settings refreshed"
+		}
+	case wifiScanResultMsg:
+		t.settings.scanning = false
+		if message.err != nil {
+			t.notice = "Wi-Fi scan failed: " + message.err.Error()
+		} else {
+			t.settings.aps = message.aps
+			t.settings.clampSelection()
+			t.notice = fmt.Sprintf("Wi-Fi scan found %d access points", len(message.aps))
+		}
+	case settingsApplyResultMsg:
+		t.settings.applying = false
+		if message.err != nil {
+			t.notice = "Failed to apply " +
+				settingsSectionNames[message.section] +
+				" settings: " + message.err.Error()
+			break
+		}
+		if message.username != "" {
+			t.client.SetCredentials(message.username, message.password)
+			t.settings.newPassword = ""
+			t.settings.confirmPassword = ""
+			t.notice = "API credentials updated; subsequent requests will re-authenticate"
+			return t, t.fetchSettingsCmd()
+		}
+		if message.detail != "" {
+			t.notice = message.detail
+			break
+		}
+		switch message.section {
+		case settingsWiFi:
+			t.notice = "Wi-Fi connection initiated; the current connection may close"
+		case settingsNetwork:
+			t.notice = "Network settings applied; reconnect if the address changed"
+		case settingsAPMode:
+			t.notice = "Wi-Fi mode change initiated; reconnect after reconfiguration"
+		default:
+			t.notice = settingsSectionNames[message.section] + " settings applied"
+			return t, t.fetchSettingsCmd()
+		}
+	case rebootResultMsg:
+		if message.err != nil {
+			t.notice = "Reboot request failed: " + message.err.Error()
+		} else {
+			t.notice = "Reboot scheduled in 3 seconds"
+		}
 	case uartExitedMsg:
 		t.activePage = pageUART
 		t.uartMenu = uartMenuState{}
@@ -282,6 +343,12 @@ func (t *tui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			t.notice = "Failed to save UART log: " + message.err.Error()
 		} else {
 			t.notice = "UART log saved as " + message.filename
+		}
+	}
+
+	if t.activePage == pageSettings && t.confirm == nil {
+		if cmd, handled := t.updateSettings(msg); handled {
+			return t, cmd
 		}
 	}
 
@@ -484,6 +551,8 @@ func (t *tui) handleGlobalKey(key tea.KeyPressMsg) (tea.Cmd, bool) {
 	case "4":
 		t.activePage = pageUART
 		return t.beginUART(nil, false), true
+	case "5":
+		return t.activatePage(pageSettings), true
 	case "m":
 		return t.setOutputCmd("MAIN", !t.switches.Main), true
 	case "u":
@@ -551,6 +620,9 @@ func (t *tui) activatePage(next page) tea.Cmd {
 			t.debugTickCmd(t.debugEpoch),
 		)
 	}
+	if next == pageSettings {
+		return t.fetchSettingsCmd()
+	}
 	return nil
 }
 
@@ -584,6 +656,36 @@ func (t *tui) executeConfirmation() tea.Cmd {
 		t.eventLines = nil
 		t.eventsView.SetContent("")
 		t.notice = "Events cleared from this TUI"
+	case confirmSettingsWiFi:
+		return t.applySettingsCmd(
+			settingsWiFi,
+			t.settings.payload(settingsWiFi),
+			"",
+			"",
+		)
+	case confirmSettingsNetwork:
+		return t.applySettingsCmd(
+			settingsNetwork,
+			t.settings.payload(settingsNetwork),
+			"",
+			"",
+		)
+	case confirmSettingsAPMode:
+		return t.applySettingsCmd(
+			settingsAPMode,
+			t.settings.payload(settingsAPMode),
+			"",
+			"",
+		)
+	case confirmSettingsUser:
+		return t.applySettingsCmd(
+			settingsUser,
+			t.settings.payload(settingsUser),
+			t.settings.username,
+			t.settings.newPassword,
+		)
+	case confirmSettingsReboot:
+		return t.rebootCmd()
 	}
 	return nil
 }
@@ -752,6 +854,8 @@ func (t *tui) renderMain() string {
 	case pageDebug:
 		t.updateDebugContent()
 		body = t.renderViewportPanel("Runtime diagnostics", t.debugView, contentHeight)
+	case pageSettings:
+		body = t.renderSettings(width, contentHeight)
 	default:
 		body = t.renderDashboard(width, contentHeight)
 	}
@@ -823,6 +927,7 @@ func (t *tui) renderNavigation(width int) string {
 		{pageEvents, "2 Events"},
 		{pageDebug, "3 Debug"},
 		{pageUART, "4 UART"},
+		{pageSettings, "5 Settings"},
 	}
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
@@ -849,6 +954,12 @@ func (t *tui) renderFooter(width int) string {
 			text = "e Clear events · ↑/↓ Scroll · r Refresh · q Quit"
 		case pageDebug:
 			text = "↑/↓ Scroll · r Refresh · q Quit"
+		case pageSettings:
+			if t.settings.baudMenuOpen {
+				text = "↑↓ select · Enter choose · Esc back"
+			} else {
+				text = "Tab group · ↑↓ select · ←→ change · Enter edit · r reload · q quit"
+			}
 		default:
 			text = "m MAIN · u USB · p Power · x Reset · c CSV · l Layout · r Refresh · q Quit"
 		}

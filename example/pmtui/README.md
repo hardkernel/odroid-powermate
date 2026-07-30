@@ -15,9 +15,9 @@ The TUI provides:
 - A raw host-terminal UART session with keyboard and paste input
 - UART screen clearing, bounded raw log saving, and baud-rate selection
 - Automatic status/UART WebSocket reconnect and HTTP reauthentication
-
-Wi-Fi provisioning and the complete settings editor are not included in this
-first version.
+- A keyboard-oriented Settings page for Wi-Fi provisioning, DHCP/static
+  addressing, AP/STA mode, current limits, API credentials, UART baud rate,
+  sensor period, output-state restoration, and reboot
 
 ## Requirements
 
@@ -67,6 +67,7 @@ go run . -host 192.168.4.1 -id admin -uart
 | `2` | Events                          |
 | `3` | Runtime diagnostics             |
 | `4` | UART stream                     |
+| `5` | Settings                        |
 | `m` | Toggle MAIN output              |
 | `u` | Toggle USB output               |
 | `p` | Power action, with confirmation |
@@ -75,6 +76,23 @@ go run . -host 192.168.4.1 -id admin -uart
 | `l` | Toggle graph layout              |
 | `r` | Refresh the current page        |
 | `q` | Quit                            |
+
+On the Settings page, use `Tab`/`Shift+Tab` to move between Wi-Fi, Network,
+AP Mode, Limits, User, and Device groups. Use `Up`/`Down` to select a row,
+`Left`/`Right` to change choices, and `Enter` to edit. Press `a` to apply the
+current group (`Connect` in the Wi-Fi group), `s` in the Wi-Fi group to scan
+for access points, and `r` to reload settings from the device. Password fields
+are masked and are never accepted through command-line arguments.
+
+Selecting `UART baud rate` with `Enter` opens a submenu containing every
+supported baud rate. Select one with `Up`/`Down` and `Enter`, then press `a`
+on the Device group to apply it.
+
+Wi-Fi credentials, address mode, AP/STA mode, API credentials, and reboot use
+a confirmation screen because they can interrupt the current connection.
+The firmware API does not return stored Wi-Fi or AP passwords, so those fields
+start empty. It also does not return the configured AP SSID; enter the intended
+SSID before applying APSTA mode.
 
 The UART WebSocket is connected while the UART terminal or its `Ctrl+T` menu is
 active.
