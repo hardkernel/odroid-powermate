@@ -21,6 +21,8 @@ const (
 	maxUARTPendingBytes = 1024 * 1024
 	maxUARTTXMessages   = 128
 	uartMenuByte        = byte(0x14)
+	clearUARTTerminal   = ansi.EraseEntireScreen + ansi.EraseEntireDisplay +
+		ansi.CursorHomePosition
 )
 
 type uartExitReason uint8
@@ -196,7 +198,7 @@ func (bridge *uartBridge) Attach(
 
 	switch {
 	case clearScreen:
-		_, _ = io.WriteString(output, ansi.EraseEntireScreen+ansi.CursorHomePosition)
+		_, _ = io.WriteString(output, clearUARTTerminal)
 	case bridge.shadow.IsAltScreen():
 		_, _ = io.WriteString(output, ansi.SetMode(ansi.ModeAltScreenSaveCursor))
 		_, _ = io.WriteString(output, ansi.EraseEntireScreen+ansi.CursorHomePosition)

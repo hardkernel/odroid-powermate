@@ -114,6 +114,10 @@ the local UART buffer, leaving the terminal, or quitting the program. Press
 Press `m` or `u` to toggle the corresponding output and immediately resume the
 raw UART terminal.
 
+The UART menu's `c` action clears both the visible terminal and the host
+terminal's scrollback. A `clear` command executed on the target only clears
+scrollback when the target emits the corresponding ANSI `CSI 3 J` sequence.
+
 While the menu is visible, incoming UART data is kept in a bounded pending
 buffer and parsed by `github.com/charmbracelet/x/vt` as shadow state. Resuming
 the raw session restores alternate-screen, cursor, mouse, and bracketed-paste
