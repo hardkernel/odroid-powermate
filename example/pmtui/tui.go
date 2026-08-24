@@ -108,8 +108,9 @@ type tui struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	width  int
-	height int
+	width          int
+	height         int
+	darkBackground bool
 
 	login         loginModel
 	authenticated bool
@@ -168,16 +169,17 @@ func newTUI(
 	debug.SoftWrap = true
 
 	return &tui{
-		ctx:        ctx,
-		cancel:     cancel,
-		login:      newLoginModel(defaultHost, defaultUsername),
-		openUART:   openUART,
-		activePage: pageDashboard,
-		version:    "unknown",
-		eventsView: events,
-		debugView:  debug,
-		settings:   newSettingsModel(),
-		statusCh:   make(chan tea.Msg, 256),
+		ctx:            ctx,
+		cancel:         cancel,
+		login:          newLoginModel(defaultHost, defaultUsername),
+		openUART:       openUART,
+		activePage:     pageDashboard,
+		version:        "unknown",
+		eventsView:     events,
+		debugView:      debug,
+		settings:       newSettingsModel(),
+		statusCh:       make(chan tea.Msg, 256),
+		darkBackground: true,
 	}
 }
 
@@ -192,7 +194,7 @@ func (t *tui) Run() error {
 }
 
 func (t *tui) Init() tea.Cmd {
-	return t.login.Init()
+	return tea.Batch(t.login.Init(), tea.RequestBackgroundColor)
 }
 
 func (t *tui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -200,6 +202,10 @@ func (t *tui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		t.width = size.Width
 		t.height = size.Height
 		t.resizeViewports()
+		return t, nil
+	}
+	if background, ok := msg.(tea.BackgroundColorMsg); ok {
+		t.darkBackground = background.IsDark()
 		return t, nil
 	}
 
@@ -984,6 +990,7 @@ func (t *tui) renderDashboard(width, height int) string {
 		width,
 		graphHeight,
 		t.graphLayout,
+		t.darkBackground,
 	)
 	return lipgloss.JoinVertical(lipgloss.Left, graphs, status)
 }

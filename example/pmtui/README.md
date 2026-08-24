@@ -5,7 +5,7 @@
 The TUI provides:
 
 - Live VIN, MAIN, and USB voltage/current/power
-- Bounded btop-style voltage, current, and power history graphs
+- Bounded Braille-rendered voltage, current, and power line graphs
 - MAIN and USB output control
 - Confirmed Power and Reset actions
 - PowerMate event viewing with a fixed 500-line history
@@ -135,12 +135,17 @@ not modify event state on the PowerMate.
 
 The Dashboard has separate voltage, current, and power graphs. Each graph
 retains the latest 600 samples for VIN, MAIN, and USB and uses its own shared
-automatic scale so that the three channels can be compared. The VIN, MAIN, and
-USB histories use separate stacked plot areas which expand to use the available
-terminal height. Press `l` to switch between horizontal and vertically stacked
-metric panels. Vertically stacked panels stretch the available history across
-the terminal width. Horizontal panels use the full panel width for their graph
-and show the VIN, MAIN, and USB values in a one-line legend below it.
+step-wise scale. VIN, MAIN, and USB use separate Braille line plots within each
+metric panel, avoiding color and visibility conflicts while preserving direct
+value comparison. Unicode Braille cells provide a 2x4 logical pixel grid per
+terminal cell. Each channel plot has a left Y-axis using the metric's shared
+scale. All layouts use compact axis marks and show the shared numeric range once
+in the panel title. Channel colors follow the WebUI light and dark palettes
+based on the terminal background. Press `l` to switch between horizontal and
+vertically stacked metric panels. Vertically stacked panels stretch the
+available history across the terminal width. Horizontal panels show the current
+VIN, MAIN, and USB values in a one-line legend below the plots. Plot height
+grows in three-row steps so all three channels always receive equal space.
 
 CSV files are created in the current directory with names such as
 `powermate_20260728_143000.csv`. Existing files are never overwritten.
