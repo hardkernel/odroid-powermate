@@ -15,6 +15,7 @@ The TUI provides:
 - A raw host-terminal UART session with keyboard and paste input
 - UART screen clearing, bounded raw log saving, and baud-rate selection
 - Automatic status/UART WebSocket reconnect and HTTP reauthentication
+- WebSocket heartbeat detection for silent or half-open server connections
 - A keyboard-oriented Settings page for Wi-Fi provisioning, DHCP/static
   addressing, AP/STA mode, current limits, API credentials, UART baud rate,
   sensor period, output-state restoration, and reboot

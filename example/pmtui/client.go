@@ -16,7 +16,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const maxHTTPResponseBytes = 256 * 1024
+const (
+	maxHTTPResponseBytes = 256 * 1024
+	webSocketPongWait    = 15 * time.Second
+	webSocketPingPeriod  = 5 * time.Second
+	webSocketWriteWait   = 2 * time.Second
+)
 
 type client struct {
 	baseURL    *url.URL
@@ -401,6 +406,7 @@ func (c *client) runWebSocket(
 			backoff = time.Second
 			onState(true, nil)
 			sessionDone := make(chan struct{})
+			c.startWebSocketHeartbeat(ctx, connection, sessionDone)
 			go func() {
 				select {
 				case <-ctx.Done():
@@ -441,6 +447,41 @@ func (c *client) runWebSocket(
 			backoff *= 2
 		}
 	}
+}
+
+func (c *client) startWebSocketHeartbeat(
+	ctx context.Context,
+	connection *websocket.Conn,
+	done <-chan struct{},
+) {
+	_ = connection.SetReadDeadline(time.Now().Add(webSocketPongWait))
+	connection.SetPongHandler(func(string) error {
+		return connection.SetReadDeadline(time.Now().Add(webSocketPongWait))
+	})
+
+	go func() {
+		ticker := time.NewTicker(webSocketPingPeriod)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-ticker.C:
+				deadline := time.Now().Add(webSocketWriteWait)
+				if err := connection.WriteControl(
+					websocket.PingMessage,
+					nil,
+					deadline,
+				); err != nil {
+					_ = connection.Close()
+					return
+				}
+			}
+		}
+	}()
 }
 
 func (c *client) dialWebSocket(ctx context.Context, path string) (*websocket.Conn, *http.Response, error) {
