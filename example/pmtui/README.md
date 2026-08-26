@@ -1,5 +1,7 @@
 # PMTUI
 
+![pmtui.png](../../img/pmtui.png)
+
 `pmtui` is a terminal client for the PowerMate HTTP and WebSocket APIs.
 
 The TUI provides:

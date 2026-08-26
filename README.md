@@ -4,6 +4,8 @@ A web-based remote power and monitoring tool for ODROID Single Board Computers (
 
 This project provides a comprehensive web interface to control power, monitor real-time metrics, and access the serial console of your ODROID from any web browser on your local network.
 
+![powermate-3d.png](img/powermate-3d.png)
+
 ## Features
 
 - **Web-Based UI**: Modern, responsive interface built with Bootstrap and vanilla JavaScript.
@@ -81,8 +83,8 @@ sudo apt install nodejs npm nanopb
 
 ## Examples
 
-- [Power data logger](example/logger)
-- [PMTUI](example/pmtui)
+- [Power data logger](example/logger): Python script for logging data and plot
+- [PMTUI](example/pmtui): Powermate frontend TUI application
 
 ## Docs
 
