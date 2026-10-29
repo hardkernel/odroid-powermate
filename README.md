@@ -85,6 +85,7 @@ sudo apt install nodejs npm nanopb
 
 - [Power data logger](example/logger): Python script for logging data and plot
 - [PMTUI](example/pmtui): Powermate frontend TUI application
+- [Claude Code plugin](example/claude-plugin): MCP server and skill that let Claude control the attached SBC (power, UART console, boot logs, power measurement)
 
 ## Docs
 

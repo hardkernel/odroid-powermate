@@ -1,0 +1,14 @@
+{
+  "name": "odroid-powermate",
+  "description": "Claude Code plugins for the ODROID PowerMate",
+  "owner": {
+    "name": "Hardkernel"
+  },
+  "plugins": [
+    {
+      "name": "powermate",
+      "source": "./example/claude-plugin",
+      "description": "Operate an SBC wired to an ODROID PowerMate (power, UART console, boot logs, power measurement) and set up the PowerMate itself."
+    }
+  ]
+}
