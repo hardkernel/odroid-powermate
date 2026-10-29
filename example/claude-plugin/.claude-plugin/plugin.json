@@ -1,7 +1,7 @@
 {
   "name": "powermate",
   "displayName": "ODROID PowerMate SBC remote control",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Let Claude operate an SBC wired to an ODROID PowerMate: power outputs, power/reset buttons, UART console (U-Boot, Linux, GRUB, EDK2), power measurement, and guided PowerMate setup (Wi-Fi, IP, current limits) with risk previews.",
   "author": {
     "name": "Hardkernel"
