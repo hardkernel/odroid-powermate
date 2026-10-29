@@ -495,9 +495,31 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
     {
         const char* baudrate = baud_item->valuestring;
         ESP_LOGI(TAG, "Received baudrate set request: %s", baudrate);
-        nconfig_write(UART_BAUD_RATE, baudrate);
-        change_baud_rate(strtol(baudrate, NULL, 10));
-        cJSON_AddStringToObject(resp_root, "baudrate_status", "updated");
+        char* end = NULL;
+        long baud = strtol(baudrate, &end, 10);
+        if (end == baudrate || *end != '\0' || !uart_baud_rate_is_supported(baud))
+        {
+            ESP_LOGW(TAG, "Baudrate request rejected: %s", baudrate);
+            cJSON_AddStringToObject(resp_root, "baudrate_status", "invalid");
+            cJSON_AddStringToObject(resp_root, "status", "error");
+        }
+        else
+        {
+            // Apply first so an unachievable rate is never persisted.
+            err = change_baud_rate((int)baud);
+            if (err == ESP_OK)
+                err = nconfig_write(UART_BAUD_RATE, baudrate);
+            if (err == ESP_OK)
+            {
+                cJSON_AddStringToObject(resp_root, "baudrate_status", "updated");
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Failed to set baudrate %s: %s", baudrate, esp_err_to_name(err));
+                cJSON_AddStringToObject(resp_root, "baudrate_status", esp_err_to_name(err));
+                cJSON_AddStringToObject(resp_root, "status", "error");
+            }
+        }
         action_taken = true;
     }
 

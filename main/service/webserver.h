@@ -31,6 +31,7 @@ void register_diagnostics_endpoint(httpd_handle_t server);
 void push_data_to_ws(const uint8_t* data, size_t len);
 void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics);
 void register_reboot_endpoint(httpd_handle_t server);
+bool uart_baud_rate_is_supported(long baud_rate);
 esp_err_t change_baud_rate(int baud_rate);
 void register_version_endpoint(httpd_handle_t server);
 

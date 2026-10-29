@@ -11,6 +11,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "nconfig.h"
+#include <stdio.h>
 #include <stdlib.h>
 #include "string.h"
 #include "webserver.h"
@@ -24,8 +25,14 @@
 #define UART_WS_LRU_UPDATE_INTERVAL_MS 1000
 #define UART_TX_PIN CONFIG_GPIO_UART_TX
 #define UART_RX_PIN CONFIG_GPIO_UART_RX
+#define UART_DEFAULT_BAUD_RATE 1500000
 
 static const char* TAG = "ws-uart";
+
+// Keep in sync with the baud rate lists in page/index.html and example/pmtui/uart_menu.go.
+static const long supported_baud_rates[] = {
+    9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000,
+};
 
 struct ws_message
 {
@@ -379,19 +386,27 @@ static esp_err_t uart_ws_handler(httpd_req_t* req)
 
 void register_ws_endpoint(httpd_handle_t server)
 {
-    size_t baud_rate_len;
-    nconfig_get_str_len(UART_BAUD_RATE, &baud_rate_len);
-    char buf[baud_rate_len];
-    nconfig_read(UART_BAUD_RATE, buf, baud_rate_len);
+    char buf[16];
+    long baud_rate = 0;
+    if (nconfig_read(UART_BAUD_RATE, buf, sizeof(buf)) == ESP_OK)
+        baud_rate = strtol(buf, NULL, 10);
 
     uart_config_t uart_config = {
-        .baud_rate = strtol(buf, NULL, 10),
+        .baud_rate = baud_rate,
         .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
     };
-    ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
+    // A bad stored rate must not abort boot, or the device can only be recovered by reflashing.
+    if (!uart_baud_rate_is_supported(baud_rate) || uart_param_config(UART_NUM, &uart_config) != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Invalid stored baud rate, falling back to %d", UART_DEFAULT_BAUD_RATE);
+        uart_config.baud_rate = UART_DEFAULT_BAUD_RATE;
+        snprintf(buf, sizeof(buf), "%d", UART_DEFAULT_BAUD_RATE);
+        nconfig_write(UART_BAUD_RATE, buf);
+        ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
+    }
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM, UART_RX_BUFFER_SIZE, UART_TX_BUFFER_SIZE, 20, &uart_event_queue, 0));
 
@@ -463,6 +478,16 @@ void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics)
     diagnostics->uart_queue_drops = uart_queue_drops;
     diagnostics->status_queue_drops = status_queue_drops;
     diagnostics->websocket_send_failures = websocket_send_failures;
+}
+
+bool uart_baud_rate_is_supported(long baud_rate)
+{
+    for (size_t i = 0; i < sizeof(supported_baud_rates) / sizeof(supported_baud_rates[0]); ++i)
+    {
+        if (supported_baud_rates[i] == baud_rate)
+            return true;
+    }
+    return false;
 }
 
 esp_err_t change_baud_rate(int baud_rate)
