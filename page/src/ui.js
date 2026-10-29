@@ -8,7 +8,7 @@
 import * as bootstrap from 'bootstrap';
 import * as dom from './dom.js';
 import * as api from './api.js';
-import {formatUptime, isMobile} from './utils.js';
+import {escapeHtml, formatUptime, isMobile} from './utils.js';
 import {applyTerminalTheme, fitTerminal} from './terminal.js';
 import {applyChartsTheme, resizeCharts, updateCharts} from './chart.js';
 
@@ -186,7 +186,7 @@ export function addEventToTable(level, timestampMs, uptimeMs, message) {
         <td class="small align-middle">${dateStr}</td>
         <td class="small align-middle">${uptimeStr}</td>
         <td class="align-middle"><i class="bi ${iconClass}" title="${levelText}"></i> <span class="d-none d-md-inline small ${textClass}">${levelText}</span></td>
-        <td class="small text-break align-middle">${message}</td>
+        <td class="small text-break align-middle">${escapeHtml(message)}</td>
     `;
 
     dom.eventTableBody.prepend(row);
@@ -217,9 +217,9 @@ export async function scanForWifi() {
                 else rssiIcon = 'bi-wifi-1';
 
                 row.innerHTML = `
-                    <td>${ap.ssid}</td>
+                    <td>${escapeHtml(ap.ssid)}</td>
                     <td class="text-center"><i class="bi ${rssiIcon}"></i></td>
-                    <td>${ap.authmode}</td>
+                    <td>${escapeHtml(ap.authmode)}</td>
                 `;
 
                 row.addEventListener('click', () => {
@@ -236,7 +236,7 @@ export async function scanForWifi() {
         }
     } catch (error) {
         console.error('Error scanning for Wi-Fi:', error);
-        dom.wifiApList.innerHTML = `<tr><td colspan="3" class="text-center text-danger">Scan failed: ${error.message}</td></tr>`;
+        dom.wifiApList.innerHTML = `<tr><td colspan="3" class="text-center text-danger">Scan failed: ${escapeHtml(error.message)}</td></tr>`;
     } finally {
         dom.scanWifiButton.disabled = false;
         dom.scanWifiButton.innerHTML = 'Scan';

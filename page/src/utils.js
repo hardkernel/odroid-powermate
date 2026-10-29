@@ -4,6 +4,21 @@
  */
 
 /**
+ * Escapes a value for safe interpolation into an HTML string.
+ * Use this for anything not authored by this page, e.g. Wi-Fi SSIDs from a scan.
+ * @param {*} value The value to escape.
+ * @returns {string} The HTML-escaped string.
+ */
+export function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
  * Creates a debounced function that delays invoking `func` until after `delay` milliseconds
  * have elapsed since the last time the debounced function was invoked.
  * @param {Function} func The function to debounce.
