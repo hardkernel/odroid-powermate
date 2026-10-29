@@ -42,6 +42,11 @@ Check `main_output_on`, `uart_stream`/`status_stream` = connected, the latest po
 `console_last_line` (it shows where the console is: `login:`, `=> `, `# `, a GRUB menu...).
 Read `warnings` before doing anything else.
 
+If it says no PowerMate address is configured, ask the user for the address (shown in
+the PowerMate web UI or the router's DHCP list), then call `powermate_connect(host=...)`.
+Never guess or scan for one. A PowerMate that is not on the network yet needs the
+factory-fresh setup below first.
+
 ## Cursors
 
 Every console tool returns a `cursor`. Pass it as `since` to the next call when timing
@@ -197,8 +202,9 @@ Factory state: Wi-Fi mode `apsta`, setup AP `powermate` (password `hardkernel`) 
 2. **Put it on the network.** The first Wi-Fi setup is the user's job: connect a phone to
    the `powermate` AP, open http://192.168.4.1, log in, and join the lab Wi-Fi in the
    settings. Then ask for the PowerMate's new address (shown in the web UI, or in the
-   router's DHCP list) and call `powermate_connect(host=...)`. If this computer itself is
-   already on the `powermate` AP, the tools can do the same step: at 192.168.4.1,
+   router's DHCP list) and call `powermate_connect(host=...)`. If the user says this
+   computer itself is on the `powermate` AP, the tools can do the same step:
+   `powermate_connect(host=192.168.4.1, save=false)`,
    `powermate_wifi_connect` with preview and confirm, then `powermate_connect` to the
    reported STA address.
 3. **Check it.** `powermate_settings`: firmware, mode, IP. Suggest a DHCP reservation, or

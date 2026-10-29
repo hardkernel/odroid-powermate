@@ -64,7 +64,8 @@ func registerAdminTools(server *mcp.Server, t *tools) {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "powermate_connect",
-		Description: "Point the tools at a PowerMate address (after onboarding, or to switch boards). Checks " +
+		Description: "Point the tools at a PowerMate address (first use, after onboarding, or to switch boards). " +
+			"Use only an address the user gave or a tool reported; never guess one. Checks " +
 			"that a PowerMate answers there, then reconnects all streams. save=true (default) remembers it " +
 			"for the next session when POWERMATE_HOST is not set.",
 		Annotations: &mcp.ToolAnnotations{OpenWorldHint: boolPtr(false)},

@@ -313,7 +313,7 @@ type manager struct {
 	dev      *device
 	cancel   context.CancelFunc
 	host     string
-	source   string // where host came from: env, saved, default, tool
+	source   string // where host came from: env, saved, tool
 	username string
 	password string
 }
@@ -350,6 +350,9 @@ func (m *manager) start(host, source string) error {
 func (m *manager) connect(ctx context.Context, host string, save bool) (string, error) {
 	// Reconnecting to the current address would throw away the console buffer and
 	// power history for nothing, so keep the device when it still answers.
+	if host == "" {
+		return "", fmt.Errorf("host is empty: ask the user for the PowerMate address")
+	}
 	if cur, _ := m.hostInfo(); cur == host {
 		probe, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
