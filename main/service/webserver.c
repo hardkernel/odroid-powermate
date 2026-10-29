@@ -61,8 +61,6 @@ static esp_err_t login_handler(httpd_req_t* req)
     }
     content[ret] = '\0'; // Null-terminate the received data
 
-    ESP_LOGI(TAG, "Received login request: %s", content);
-
     cJSON* root = cJSON_Parse(content);
     if (root == NULL)
     {
@@ -83,6 +81,9 @@ static esp_err_t login_handler(httpd_req_t* req)
 
     const char* received_username = username_json->valuestring;
     const char* received_password = password_json->valuestring;
+
+    // Never log the password.
+    ESP_LOGI(TAG, "Received login request for user: %s", received_username);
 
     // Get stored username and password from nconfig
     size_t stored_username_len = 0;

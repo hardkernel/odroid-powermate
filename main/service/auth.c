@@ -101,7 +101,7 @@ char* auth_generate_token(void)
     s_tokens[free_slot].active = true;
     s_tokens[free_slot].creation_time = time(NULL);
 
-    ESP_LOGI(TAG, "Generated new token at slot %d: %s", free_slot, new_token);
+    ESP_LOGI(TAG, "Generated new token at slot %d: %.4s****", free_slot, new_token);
 
     xSemaphoreGive(s_token_mutex);
     return new_token;
