@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: GPL-3.0-only
+
 /** Manages the raw UART stream independently from protobuf status messages. */
 
 let uartWebSocket;

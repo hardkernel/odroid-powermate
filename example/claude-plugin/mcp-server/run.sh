@@ -1,4 +1,7 @@
 #!/bin/sh
+# SPDX-FileCopyrightText: 2026 Hardkernel Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 # Launch powermate-mcp, building it first when the binary is missing or older than
 # the sources. Build output goes to stderr because stdout carries the MCP protocol.
 set -e

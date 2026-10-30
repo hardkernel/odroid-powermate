@@ -8,6 +8,7 @@
     {
       "name": "powermate",
       "source": "./example/claude-plugin",
+      "license": "Apache-2.0",
       "description": "Operate an SBC wired to an ODROID PowerMate (power, UART console, boot logs, power measurement) and set up the PowerMate itself."
     }
   ]

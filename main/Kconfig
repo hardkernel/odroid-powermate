@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+# SPDX-License-Identifier: GPL-3.0-only
+
 menu "ODROID-MONITOR"
 	menu "GPIO"
 		orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"

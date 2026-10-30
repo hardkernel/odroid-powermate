@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 /**
  * @file nconfig.h
  * @brief Provides an interface for managing system configuration using Non-Volatile Storage (NVS).

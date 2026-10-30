@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: GPL-3.0-only
+
 /**
  * @file events.js
  * @description This module sets up all the event listeners for the application.

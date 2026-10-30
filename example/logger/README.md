@@ -138,3 +138,7 @@ Running the plot script will generate an image file similar to this:
 ![plot.png](img/plot.png)
 
 The 5-unit scale is highlighted with a blue dotted line, and the 10-unit scale is highlighted with a red dotted line.
+
+## License
+
+[Apache-2.0](../LICENSE)

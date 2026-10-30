@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Hardkernel Co., Ltd.
+# SPDX-License-Identifier: GPL-3.0-only
+
 idf_component_get_property(esptool_py_cmd esptool_py ESPTOOLPY_CMD)
 if (NOT esptool_py_cmd)
     message(FATAL_ERROR "ESP-IDF esptool command is unavailable")

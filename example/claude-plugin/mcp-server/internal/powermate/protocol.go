@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // Derived from example/pmtui/protocol.go: hand-written protowire decoder for proto/status.proto.
 
 package powermate

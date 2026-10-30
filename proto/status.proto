@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 syntax = "proto3";
 
 // Represents data for a single sensor channel

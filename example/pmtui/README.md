@@ -158,3 +158,7 @@ The status WebSocket uses the wire format defined by
 `../../proto/status.proto`. This client decodes only the fields used by the
 current TUI and safely skips unknown fields. When the firmware protocol changes,
 update `protocol.go` together with the `.proto` definition.
+
+## License
+
+[Apache-2.0](LICENSE)

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: GPL-3.0-only
+
 /**
  * @file ui.js
  * @description This module manages all UI interactions and updates.

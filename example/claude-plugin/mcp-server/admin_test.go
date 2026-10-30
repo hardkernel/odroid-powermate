@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 package main
 
 import "testing"

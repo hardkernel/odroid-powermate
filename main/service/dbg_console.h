@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 #ifndef ODROID_POWER_MATE_DBG_CONSOLE_H
 #define ODROID_POWER_MATE_DBG_CONSOLE_H
 

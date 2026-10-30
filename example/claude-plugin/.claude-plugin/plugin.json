@@ -8,5 +8,6 @@
   },
   "homepage": "https://wiki.odroid.com/accessory/powermate",
   "repository": "https://github.com/hardkernel/odroid-powermate",
+  "license": "Apache-2.0",
   "keywords": ["odroid", "powermate", "sbc", "uart", "u-boot", "power"]
 }

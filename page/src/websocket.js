@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: GPL-3.0-only
+
 /**
  * @file websocket.js
  * @description This module handles the WebSocket connection for real-time, two-way

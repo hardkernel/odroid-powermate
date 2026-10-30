@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: GPL-3.0-only
+
 /**
  * @file api.js
  * @description This module centralizes all API calls to the server's RESTful endpoints.

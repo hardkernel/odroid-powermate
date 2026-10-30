@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+# SPDX-License-Identifier: GPL-3.0-only
+
 # Define the web application source directory and the final output file
 set(WEB_APP_SOURCE_DIR ${CMAKE_SOURCE_DIR}/page)
 set(GZ_OUTPUT_FILE ${WEB_APP_SOURCE_DIR}/dist/index.html.gz)
@@ -57,6 +60,7 @@ add_custom_target(build_web_app ALL
         DEPENDS ${GZ_OUTPUT_FILE}
 )
 
+# The generated files are Apache-2.0 like status.proto; see REUSE.toml.
 add_custom_command(
         OUTPUT ${PROTO_C_FILE} ${PROTO_H_FILE}
         COMMAND protoc --nanopb_out=${PROTO_OUT_DIR} status.proto

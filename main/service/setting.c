@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 #include <stdlib.h>
 #include <stdbool.h>
 #include <stdio.h>

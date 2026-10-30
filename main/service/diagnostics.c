@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Hardkernel Co., Ltd.
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 #include "auth.h"
 #include "cJSON.h"
 #include <stdlib.h>

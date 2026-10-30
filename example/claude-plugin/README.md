@@ -171,3 +171,7 @@ cd mcp-server
 go test ./...
 go build -o bin/powermate-mcp .
 ```
+
+## License
+
+[Apache-2.0](LICENSE)

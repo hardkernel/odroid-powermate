@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // powermate-mcp is an MCP stdio server that lets an agent operate an SBC through an
 // ODROID PowerMate: power outputs, power/reset header pins, the UART console and
 // the power sensors.

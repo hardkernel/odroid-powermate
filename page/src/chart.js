@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: GPL-3.0-only
+
 /**
  * @file chart.js
  * @description This module manages the Chart.js instances for visualizing sensor data.

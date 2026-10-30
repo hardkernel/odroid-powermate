@@ -1,0 +1,10 @@
+version = 1
+
+# Generated from proto/status.proto by nanopb (CMake) and pbjs (npm run build:proto)
+# on every build, so they cannot keep an SPDX header. They follow the license of
+# the .proto they are generated from.
+[[annotations]]
+path = ["main/proto/status.pb.c", "main/proto/status.pb.h", "page/src/proto.js"]
+precedence = "override"
+SPDX-FileCopyrightText = "2025 Hardkernel Co., Ltd."
+SPDX-License-Identifier = "Apache-2.0"

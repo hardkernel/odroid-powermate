@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package console buffers the target's UART stream so tools can read, wait for and
 // match output that arrived while no tool call was running.
 package console

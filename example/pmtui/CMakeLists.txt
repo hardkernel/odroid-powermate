@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2026 Hardkernel Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 set(PMTUI_GO_EXECUTABLE "go" CACHE STRING "Go compiler used to build PMTUI")
 set(PMTUI_BINARY "${CMAKE_BINARY_DIR}/pmtui")
 

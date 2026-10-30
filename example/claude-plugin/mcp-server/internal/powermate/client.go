@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 Hardkernel Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // Package powermate is a client for the ODROID PowerMate HTTP/WebSocket API.
 //
 // Derived from example/pmtui/client.go. Differences that matter for a long-running

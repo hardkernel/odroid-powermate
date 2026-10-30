@@ -1,3 +1,8 @@
+/*
+ * SPDX-FileCopyrightText: 2025 Hardkernel Co., Ltd.
+ * SPDX-License-Identifier: GPL-3.0-only
+ */
+
 /**
  * @file system.h
  * @brief Declares system-level functions for core operations like rebooting and starting services.
