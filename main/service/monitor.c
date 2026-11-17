@@ -20,7 +20,8 @@
 #include "esp_wifi_types_generic.h"
 #include "event.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/task.h" // Added for FreeRTOS tasks
+#include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "driver/gpio.h"
 #include "ina3221.h"
 #include "pbmsg.h"
@@ -52,6 +53,8 @@ static TaskHandle_t warning_task_handle = NULL;
 static volatile bool critical_cutoff_pending = false;
 static volatile uint16_t pending_critical_flags = 0;
 static volatile uint16_t pending_warning_flags = 0;
+static portMUX_TYPE pending_flags_mux = portMUX_INITIALIZER_UNLOCKED;
+static SemaphoreHandle_t status_lock;
 static uint16_t last_warning_flags = 0;
 
 #define INA3221_ADDR 0x40
@@ -60,7 +63,12 @@ static uint16_t last_warning_flags = 0;
 static const uint16_t shunt_mohm[INA3221_CHANNELS] = {10, 10, 10};
 
 // All channels, continuous shunt and bus conversions, 16-sample averaging,
-// 140 us bus and 1.1 ms shunt conversion time.
+// 140 us bus and 1.1 ms shunt conversion time. One averaged result per channel every
+// 3 x (140 + 1100) us x 16 = 59.5 ms. The warning alert compares these averages, so this
+// window is also the warning cut-off delay; the critical alert checks every single
+// conversion. A shunt conversion takes 1.1 of every 3.72 ms, near the 1/3 maximum for
+// three channels sharing one ADC.
+#define INA3221_CYCLE_US (3 * (140 + 1100) * 16)
 static const uint16_t ina3221_config = INA3221_CONFIG_CH_EN(0) | INA3221_CONFIG_CH_EN(1) | INA3221_CONFIG_CH_EN(2) |
     INA3221_CONFIG_AVG(INA3221_AVG_16) | INA3221_CONFIG_VBUS_CT(INA3221_CT_140US) |
     INA3221_CONFIG_VSH_CT(INA3221_CT_1100US) | INA3221_CONFIG_MODE_CONTINUOUS;
@@ -78,24 +86,54 @@ static const monitor_channel_t monitor_channels[] = {
     {.name = "VIN", .channel = CHANNEL_VIN, .cf_bit = BIT0},   // IN3
 };
 
-/** Reads the alert flags (clearing the latched ones). *mask is valid only on ESP_OK. */
+static void add_pending_flags(volatile uint16_t* flags, uint16_t value)
+{
+    taskENTER_CRITICAL(&pending_flags_mux);
+    *flags |= value;
+    taskEXIT_CRITICAL(&pending_flags_mux);
+}
+
+static uint16_t take_pending_flags(volatile uint16_t* flags)
+{
+    taskENTER_CRITICAL(&pending_flags_mux);
+    uint16_t value = *flags;
+    *flags = 0;
+    taskEXIT_CRITICAL(&pending_flags_mux);
+    return value;
+}
+
+/**
+ * Reads the Mask/Enable register. *mask is valid only on ESP_OK.
+ *
+ * The read clears the latched critical flags, and the sampler reads this register every
+ * conversion cycle. So every read parks the critical flags in pending_critical_flags,
+ * under one lock, before anyone else can read the register again: the shutdown task reads
+ * the status first and takes the pending flags after, and never sees a cleared source.
+ * The warning flags are not latched here, but the sampler still forwards the ones it sees
+ * newly set (see sampler_task), so a read there can never hide a warning from its task.
+ */
 static esp_err_t ina3221_get_status(uint16_t* mask)
 {
-    return ina3221_read(INA3221_REG_MASK, mask);
+    xSemaphoreTake(status_lock, portMAX_DELAY);
+    esp_err_t err = ina3221_read(INA3221_REG_MASK, mask);
+    if (err == ESP_OK)
+        add_pending_flags(&pending_critical_flags, INA3221_MASK_CF(*mask));
+    xSemaphoreGive(status_lock);
+    return err;
 }
 
 static void notify_alert_tasks(uint16_t cf, uint16_t wf)
 {
     if (cf)
     {
-        pending_critical_flags |= cf;
+        add_pending_flags(&pending_critical_flags, cf);
         if (shutdown_task_handle != NULL)
             xTaskNotifyGive(shutdown_task_handle);
     }
 
     if (wf)
     {
-        pending_warning_flags |= wf;
+        add_pending_flags(&pending_warning_flags, wf);
         if (warning_task_handle != NULL)
             xTaskNotifyGive(warning_task_handle);
     }
@@ -306,13 +344,6 @@ static void disable_warning_fault_load_switches(uint16_t wf)
     }
 }
 
-static uint16_t take_pending_flags(volatile uint16_t* flags)
-{
-    uint16_t value = *flags;
-    *flags = 0;
-    return value;
-}
-
 static double clamp_current_limit(double value, double max_value)
 {
     if (value < 0.0)
@@ -329,6 +360,84 @@ static double clamp_critical_current_limit(double value, double max_value)
     if (value > max_value)
         return max_value;
     return value;
+}
+
+typedef struct
+{
+    float voltage_sum;
+    float current_sum;
+    float power_sum;
+    float current_max;
+    float power_max;
+    uint32_t count;
+} channel_accumulator_t;
+
+// Every averaged result since the last report, so a report covers its whole period
+// instead of the one 59.5 ms window that happened to be in the registers.
+static channel_accumulator_t accumulators[INA3221_CHANNELS];
+static portMUX_TYPE accumulator_mux = portMUX_INITIALIZER_UNLOCKED;
+
+/**
+ * The sampler's Mask/Enable read. The warning flags change when an averaged result is
+ * ready, the very moment this task polls, and the warning task reads the register only
+ * after it is notified. So newly set warning flags are handed to it here, whether or not
+ * this read would have cleared them; flags that stay set are not sent again.
+ */
+static esp_err_t sampler_get_status(uint16_t* mask, uint16_t* last_wf)
+{
+    esp_err_t err = ina3221_get_status(mask);
+    if (err != ESP_OK)
+        return err;
+    uint16_t wf = INA3221_MASK_WF(*mask);
+    uint16_t new_wf = wf & ~*last_wf;
+    *last_wf = wf;
+    if (new_wf)
+        notify_alert_tasks(0, new_wf);
+    return ESP_OK;
+}
+
+static void sampler_task(void* arg)
+{
+    uint16_t last_wf = 0;
+    while (1)
+    {
+        // Sleep through most of the cycle, then poll the conversion-ready flag.
+        vTaskDelay(pdMS_TO_TICKS(INA3221_CYCLE_US / 1000 - 6));
+        uint16_t mask = 0;
+        for (int polls = 0; polls < 10; polls++)
+        {
+            if (sampler_get_status(&mask, &last_wf) != ESP_OK || (mask & INA3221_MASK_CVRF))
+                break;
+            vTaskDelay(pdMS_TO_TICKS(2));
+        }
+        // Another reader of the Mask/Enable register (an alert task) can clear the flag
+        // first; that cycle is skipped.
+        if (!(mask & INA3221_MASK_CVRF))
+            continue;
+
+        float voltage[INA3221_CHANNELS], current[INA3221_CHANNELS];
+        bool ok = true;
+        for (uint8_t i = 0; i < INA3221_CHANNELS && ok; i++)
+            ok = read_channel(i, &voltage[i], &current[i]) == ESP_OK;
+        if (!ok)
+            continue;
+
+        taskENTER_CRITICAL(&accumulator_mux);
+        for (uint8_t i = 0; i < INA3221_CHANNELS; i++)
+        {
+            channel_accumulator_t* acc = &accumulators[i];
+            float power = voltage[i] * current[i];
+            if (acc->count == 0 || current[i] > acc->current_max)
+                acc->current_max = current[i];
+            if (acc->count == 0 || power > acc->power_max)
+                acc->power_max = power;
+            acc->voltage_sum += voltage[i];
+            acc->current_sum += current[i];
+            acc->power_sum += power;
+            acc->count++;
+        }
+        taskEXIT_CRITICAL(&accumulator_mux);
+    }
 }
 
 static void sensor_timer_callback(void* arg)
@@ -348,16 +457,35 @@ static void sensor_timer_callback(void* arg)
 
     SensorChannelData* channels[] = {&sensor_data->usb, &sensor_data->main, &sensor_data->vin};
 
+    channel_accumulator_t period[INA3221_CHANNELS];
+    taskENTER_CRITICAL(&accumulator_mux);
+    memcpy(period, accumulators, sizeof(period));
+    memset(accumulators, 0, sizeof(accumulators));
+    taskEXIT_CRITICAL(&accumulator_mux);
+
     for (uint8_t i = 0; i < INA3221_CHANNELS; i++)
     {
-        float voltage = 0.0f, current = 0.0f, power;
-        read_channel(i, &voltage, &current);
-        power = voltage * current;
-
-        // For protobuf
-        channels[i]->voltage = voltage;
-        channels[i]->current = current;
-        channels[i]->power = power;
+        const channel_accumulator_t* acc = &period[i];
+        if (acc->count > 0)
+        {
+            // Mean of the averaged results in this period, power per result (mean of V x I).
+            channels[i]->voltage = acc->voltage_sum / acc->count;
+            channels[i]->current = acc->current_sum / acc->count;
+            channels[i]->power = acc->power_sum / acc->count;
+            channels[i]->current_max = acc->current_max;
+            channels[i]->power_max = acc->power_max;
+        }
+        else
+        {
+            // No new result since the last report (sampler starting, or a skipped cycle).
+            float voltage = 0.0f, current = 0.0f;
+            read_channel(i, &voltage, &current);
+            channels[i]->voltage = voltage;
+            channels[i]->current = current;
+            channels[i]->power = voltage * current;
+            channels[i]->current_max = current;
+            channels[i]->power_max = channels[i]->power;
+        }
     }
 
     // datalog_add(timestamp, channel_data_log);
@@ -434,9 +562,10 @@ static void shutdown_load_sw_task(void* pvParameters)
         gpio_set_level(PM_EXPANDER_RST, 0);
 
         ESP_LOGW(TAG, "critical interrupt triggered (via task)");
-        uint16_t cf = take_pending_flags(&pending_critical_flags);
         uint16_t mask = 0;
         esp_err_t status_err = ina3221_get_status(&mask);
+        // After the status read: it parks the latched flags, and so does every earlier read.
+        uint16_t cf = take_pending_flags(&pending_critical_flags);
         bool button_pressed = false;
 
         if (status_err == ESP_OK)
@@ -636,6 +765,8 @@ esp_err_t climit_get_critical_usb(float* limit_a, uint16_t* raw)
 
 void init_status_monitor()
 {
+    status_lock = xSemaphoreCreateMutex();
+    ESP_ERROR_CHECK(status_lock ? ESP_OK : ESP_ERR_NO_MEM);
     gpio_init();
     // Latch the critical alert so the shutdown task can still read which channel tripped.
     ESP_ERROR_CHECK(ina3221_init(INA3221_ADDR, ina3221_config, INA3221_MASK_CEN));
@@ -684,8 +815,21 @@ void init_status_monitor()
         gpio_set_level(PM_EXPANDER_RST, 0);
         xTaskNotifyGive(shutdown_task_handle);
     }
+    else
+    {
+        // The limit setup above read the Mask/Enable register, which parks any critical
+        // flag latched before this boot. No cut-off is pending, so drop it; left there it
+        // would be blamed for the next button press.
+        take_pending_flags(&pending_critical_flags);
+    }
     if (gpio_get_level(PM_INT_WARNING) == 0 && warning_task_handle != NULL)
         xTaskNotifyGive(warning_task_handle);
+
+    // Started after the boot checks so that its reads cannot park a flag that the check
+    // above then drops. Above httpd (12), so serving a page does not make it miss
+    // conversion cycles; it holds the CPU for well under a millisecond per cycle. Measured
+    // use is ~820 bytes on the normal path; the rest is for I2C error logging.
+    xTaskCreate(sampler_task, "ina3221_sampler", 2048, NULL, 13, NULL);
 
     nconfig_read(SENSOR_PERIOD_MS, buf, sizeof(buf));
     ESP_ERROR_CHECK(esp_timer_start_periodic(sensor_timer, strtol(buf, NULL, 10) * 1000));
