@@ -12,12 +12,20 @@
 #include "esp_err.h"
 #include <stdbool.h>
 
+#define SW_MAIN (1u << 0)
+#define SW_USB (1u << 1)
+
 void init_sw();
 void config_sw();
 void publish_load_switch_status();
 esp_err_t sync_load_switch_status_from_hw();
-void trig_power();
-void trig_reset();
+/** Presses the SBC power (or reset) button. ESP_ERR_INVALID_STATE: the last press is still held. */
+esp_err_t trig_power();
+esp_err_t trig_reset();
+/** Switches the outputs in mask (SW_MAIN, SW_USB); the others keep their level. */
+esp_err_t set_load_switch_outputs(unsigned mask, bool main_on, bool usb_on);
+/** Protective cut-off of the outputs in mask: waits for the locks and always writes. */
+esp_err_t cut_load_switch_outputs(unsigned mask);
 esp_err_t set_load_switches(bool main_on, bool usb_on);
 esp_err_t set_main_load_switch(bool on);
 esp_err_t set_usb_load_switch(bool on);

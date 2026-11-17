@@ -72,11 +72,12 @@ static esp_err_t control_post_handler(httpd_req_t* req)
 
     cJSON* item_12v = cJSON_GetObjectItem(root, "load_12v_on");
     cJSON* item_5v = cJSON_GetObjectItem(root, "load_5v_on");
-    if (cJSON_IsBool(item_12v) || cJSON_IsBool(item_5v))
+    // Only the outputs named in the request change; the other keeps its level even if a
+    // cut-off switched it while this request was on its way.
+    unsigned mask = (cJSON_IsBool(item_12v) ? SW_MAIN : 0) | (cJSON_IsBool(item_5v) ? SW_USB : 0);
+    if (mask)
     {
-        bool main_on = cJSON_IsBool(item_12v) ? cJSON_IsTrue(item_12v) : get_main_load_switch();
-        bool usb_on = cJSON_IsBool(item_5v) ? cJSON_IsTrue(item_5v) : get_usb_load_switch();
-        err = set_load_switches(main_on, usb_on);
+        err = set_load_switch_outputs(mask, cJSON_IsTrue(item_12v), cJSON_IsTrue(item_5v));
         if (err != ESP_OK)
         {
             cJSON_Delete(root);
@@ -85,15 +86,44 @@ static esp_err_t control_post_handler(httpd_req_t* req)
         }
     }
 
+    const char* refused = NULL;
     cJSON* power_trigger = cJSON_GetObjectItem(root, "power_trigger");
     if (cJSON_IsTrue(power_trigger))
-        trig_power();
+    {
+        err = trig_power();
+        if (err == ESP_ERR_INVALID_STATE)
+            refused = "Power button press already in progress";
+        else if (err != ESP_OK)
+            refused = "Power button press failed";
+    }
 
     cJSON* reset_trigger = cJSON_GetObjectItem(root, "reset_trigger");
-    if (cJSON_IsTrue(reset_trigger))
-        trig_reset();
+    if (cJSON_IsTrue(reset_trigger) && !refused)
+    {
+        err = trig_reset();
+        if (err == ESP_ERR_INVALID_STATE)
+            refused = "Reset button press already in progress";
+        else if (err != ESP_OK)
+            refused = "Reset button press failed";
+    }
 
     cJSON_Delete(root);
+
+    if (refused)
+    {
+        // 409: the previous press is still being held; the caller can try again after it.
+        if (err == ESP_ERR_INVALID_STATE)
+        {
+            httpd_resp_set_status(req, "409 Conflict");
+            httpd_resp_set_type(req, "text/plain");
+            httpd_resp_sendstr(req, refused);
+        }
+        else
+        {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, refused);
+        }
+        return ESP_OK;
+    }
 
     httpd_resp_sendstr(req, "{\"status\":\"ok\"}");
     return ESP_OK;

@@ -310,34 +310,41 @@ static void push_warning_fault_details(uint16_t wf)
     }
 }
 
+// Protective: cut_load_switch_outputs() waits for the switch locks and writes the outputs
+// off even when they already read off, so a request in flight cannot skip or undo it.
 static void disable_warning_fault_load_switches(uint16_t wf)
 {
     if (wf & INA3221_FLAG_BIT(CHANNEL_VIN)) // The VIN input warning protects all outputs.
     {
         ESP_LOGW(TAG, "warning action: VIN limit exceeded, disabling all load switches");
         push_eventf(EV_WARNING, "warning action: VIN limit exceeded, disabling all load switches");
-        esp_err_t err = set_load_switches(false, false);
+        esp_err_t err = cut_load_switch_outputs(SW_MAIN | SW_USB);
         if (err != ESP_OK)
             ESP_LOGW(TAG, "warning action failed: all=%s", esp_err_to_name(err));
         return;
     }
 
+    // Both in one call, so the second output is not left on while the first one's state is saved.
+    unsigned mask = 0;
     if (wf & INA3221_FLAG_BIT(CHANNEL_MAIN))
     {
         ESP_LOGW(TAG, "warning action: MAIN limit exceeded, disabling MAIN load switch");
         push_eventf(EV_WARNING, "warning action: MAIN limit exceeded, disabling MAIN load switch");
-        esp_err_t err = set_main_load_switch(false);
-        if (err != ESP_OK)
-            ESP_LOGW(TAG, "warning action failed: main=%s", esp_err_to_name(err));
+        mask |= SW_MAIN;
     }
 
     if (wf & INA3221_FLAG_BIT(CHANNEL_USB))
     {
         ESP_LOGW(TAG, "warning action: USB limit exceeded, disabling USB load switch");
         push_eventf(EV_WARNING, "warning action: USB limit exceeded, disabling USB load switch");
-        esp_err_t err = set_usb_load_switch(false);
+        mask |= SW_USB;
+    }
+
+    if (mask)
+    {
+        esp_err_t err = cut_load_switch_outputs(mask);
         if (err != ESP_OK)
-            ESP_LOGW(TAG, "warning action failed: usb=%s", esp_err_to_name(err));
+            ESP_LOGW(TAG, "warning action failed: %s", esp_err_to_name(err));
     }
 }
 

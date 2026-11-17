@@ -23,6 +23,7 @@
 #include "monitor.h"
 #include "nconfig.h"
 #include "system.h"
+#include "sw.h"
 #include "tls_cert.h"
 #include "event.h"
 #include "wifi.h"
@@ -343,6 +344,7 @@ void start_webserver(void)
     {
         // Keep the current limits and the debug console even without a web server.
         ESP_LOGE(TAG, "web server failed to start");
+        init_sw(); // before the warning task can cut an output
         init_status_monitor();
         initialize_dbg_console();
         return;
