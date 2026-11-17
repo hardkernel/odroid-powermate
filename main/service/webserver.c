@@ -6,6 +6,8 @@
 #include "webserver.h"
 #include "sdkconfig.h"
 #include <stdio.h>
+#include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 #include "auth.h"
 #include "cJSON.h"
@@ -21,6 +23,10 @@
 #include "monitor.h"
 #include "nconfig.h"
 #include "system.h"
+#include "tls_cert.h"
+#include "event.h"
+#include "wifi.h"
+#include "esp_https_server.h"
 
 static const char* TAG = "WEBSERVER";
 
@@ -186,6 +192,120 @@ static esp_err_t login_handler(httpd_req_t* req)
 // refreshed from sdkconfig.defaults once it exists: delete it and rebuild.
 _Static_assert(POWERMATE_HTTP_MAX_OPEN_SOCKETS + 3 <= CONFIG_LWIP_MAX_SOCKETS,
                "CONFIG_LWIP_MAX_SOCKETS too small for POWERMATE_HTTP_MAX_OPEN_SOCKETS: delete sdkconfig and rebuild");
+// Same for the HTTPS settings: without dynamic buffers six sessions would need ~180 KB,
+// and the TLS 1.3 server crashed with them.
+#if !CONFIG_MBEDTLS_DYNAMIC_BUFFER || CONFIG_MBEDTLS_SSL_PROTO_TLS1_3 || !CONFIG_MBEDTLS_X509_CRT_WRITE_C || \
+    !CONFIG_ESP_TLS_SERVER_SESSION_TICKETS
+#error "sdkconfig predates the HTTPS settings in sdkconfig.defaults: delete sdkconfig and rebuild"
+#endif
+
+static bool s_https;
+
+// With HTTPS on, port 80 answers with a redirect to https://. There is no redirect the
+// other way: a TLS listener on 443 in HTTP mode made browsers that try HTTPS first stop at
+// the self-signed certificate instead of falling back to http://.
+// One session: a redirect is answered at once, and LRU purge frees it for the next.
+#define REDIRECT_MAX_OPEN_SOCKETS 1
+
+// Every server uses its sessions plus a listening, a control and a message socket.
+_Static_assert(POWERMATE_HTTPS_MAX_OPEN_SOCKETS + 3 + REDIRECT_MAX_OPEN_SOCKETS + 3 <= CONFIG_LWIP_MAX_SOCKETS,
+               "CONFIG_LWIP_MAX_SOCKETS too small for the HTTPS and redirect servers");
+
+static esp_err_t redirect_handler(httpd_req_t* req)
+{
+    const char* scheme = req->user_ctx;
+    char host[64] = "";
+    bool ok = httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) == ESP_OK;
+    char* port = strchr(host, ':');
+    if (port)
+        *port = '\0';
+    // Only a plain name or address goes into the Location header.
+    for (const char* c = host; ok && *c; c++)
+        ok = isalnum((unsigned char)*c) || *c == '.' || *c == '-';
+    if (!ok || !host[0])
+        snprintf(host, sizeof(host), "%s.local", wifi_hostname());
+
+    size_t len = strlen(scheme) + 3 + strlen(host) + strlen(req->uri) + 1;
+    char* location = malloc(len);
+    if (!location)
+        return httpd_resp_send_500(req);
+    snprintf(location, len, "%s://%s%s", scheme, host, req->uri);
+    // Temporary: a browser keeps a 301 for good, which would break switching back.
+    httpd_resp_set_status(req, "307 Temporary Redirect");
+    httpd_resp_set_hdr(req, "Location", location);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    esp_err_t err = httpd_resp_send(req, NULL, 0);
+    free(location);
+    return err;
+}
+
+static void start_redirect_to_https(void)
+{
+    httpd_handle_t server = NULL;
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port = 80;
+    config.ctrl_port = ESP_HTTPD_DEF_CTRL_PORT + 2; // +1 is the HTTPS server's
+    config.max_open_sockets = REDIRECT_MAX_OPEN_SOCKETS;
+    config.max_uri_handlers = 1;
+    config.uri_match_fn = httpd_uri_match_wildcard;
+    config.lru_purge_enable = true;
+    config.task_priority = 5; // below the UART bridge
+    config.stack_size = 4096;
+
+    esp_err_t err = httpd_start(&server, &config);
+    if (err == ESP_OK)
+    {
+        httpd_uri_t any = {.uri = "/*", .method = HTTP_GET, .handler = redirect_handler, .user_ctx = "https"};
+        err = httpd_register_uri_handler(server, &any);
+    }
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "redirect to https:// not available: %s", esp_err_to_name(err));
+}
+
+bool webserver_is_https(void)
+{
+    return s_https;
+}
+
+static bool https_requested(void)
+{
+    char buf[8] = "";
+    return nconfig_read(HTTPS_ENABLED, buf, sizeof(buf)) == ESP_OK && strcmp(buf, "true") == 0;
+}
+
+static esp_err_t start_https(httpd_handle_t* server, const httpd_config_t* base)
+{
+    char *cert = NULL, *key = NULL;
+    size_t cert_len, key_len;
+    esp_err_t err = tls_cert_ready() ? tls_cert_load(&cert, &cert_len, &key, &key_len) : ESP_ERR_INVALID_STATE;
+    if (err != ESP_OK)
+        return err;
+
+    httpd_ssl_config_t ssl = HTTPD_SSL_CONFIG_DEFAULT();
+    uint16_t ctrl_port = ssl.httpd.ctrl_port;
+    ssl.httpd = *base;
+    ssl.httpd.ctrl_port = ctrl_port;
+    ssl.httpd.max_open_sockets = POWERMATE_HTTPS_MAX_OPEN_SOCKETS;
+    // The handshakes run here: measured peak ~3.9 KB.
+    ssl.httpd.stack_size = 1024 * 8;
+    ssl.transport_mode = HTTPD_SSL_TRANSPORT_SECURE;
+    ssl.port_secure = 443;
+    ssl.session_tickets = true;
+    // A handshake runs in the httpd task, which also sends every WebSocket frame: a
+    // client that connects and never sends a ClientHello must not hold it for the
+    // default 10 s. The deadline is checked after each blocking read (5 s), so such a
+    // client still holds httpd for ~6 s. A full handshake takes ~0.7 s.
+    ssl.tls_handshake_timeout_ms = 3000;
+    ssl.servercert = (const uint8_t*)cert;
+    ssl.servercert_len = cert_len;
+    ssl.prvtkey_pem = (const uint8_t*)key;
+    ssl.prvtkey_len = key_len;
+    err = httpd_ssl_start(server, &ssl); // keeps its own copies
+    memset(key, 0, key_len);
+    free(key);
+    free(cert);
+    return err;
+}
 
 void start_webserver(void)
 {
@@ -196,7 +316,7 @@ void start_webserver(void)
     // Measured peak is ~3.5 KB (settings and current-limit writes with NVS and I2C,
     // Wi-Fi scan, WebSocket input, ten sessions under a full-rate UART stream).
     config.stack_size = 1024 * 6;
-    config.max_uri_handlers = 12;
+    config.max_uri_handlers = 16;
     config.task_priority = 12;
     config.max_open_sockets = POWERMATE_HTTP_MAX_OPEN_SOCKETS;
     config.lru_purge_enable = true;
@@ -205,10 +325,31 @@ void start_webserver(void)
     config.keep_alive_interval = 5;
     config.keep_alive_count = 3;
 
-    if (httpd_start(&server, &config) != ESP_OK)
+    // HTTPS when it is turned on and the certificate loads, otherwise HTTP: a broken
+    // certificate must not leave the device without its web UI.
+    if (tls_cert_init() != ESP_OK)
+        ESP_LOGE(TAG, "HTTPS certificate store unavailable");
+    if (https_requested())
     {
+        esp_err_t err = start_https(&server, &config);
+        s_https = err == ESP_OK;
+        if (!s_https)
+        {
+            ESP_LOGE(TAG, "HTTPS failed to start (%s), serving HTTP", esp_err_to_name(err));
+            push_eventf(EV_WARNING, "HTTPS failed to start (%s), serving HTTP", esp_err_to_name(err));
+        }
+    }
+    if (!s_https && httpd_start(&server, &config) != ESP_OK)
+    {
+        // Keep the current limits and the debug console even without a web server.
+        ESP_LOGE(TAG, "web server failed to start");
+        init_status_monitor();
+        initialize_dbg_console();
         return;
     }
+    discovery_set_web(s_https);
+    if (s_https)
+        start_redirect_to_https();
 
     // Index page
     httpd_uri_t index = {.uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL};
@@ -224,6 +365,8 @@ void start_webserver(void)
     register_diagnostics_endpoint(server);
     register_reboot_endpoint(server);
     register_version_endpoint(server);
+    if (register_tls_endpoint(server) != ESP_OK)
+        ESP_LOGE(TAG, "TLS endpoint not registered");
 
     init_status_monitor();
 

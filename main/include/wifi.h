@@ -34,6 +34,13 @@ const char* wifi_hostname(void);
  */
 esp_err_t discovery_start(void);
 
+/**
+ * @brief Points the advertised web service at the server that actually started: with HTTPS
+ * on, _https._tcp on port 443 replaces _http._tcp, and _powermate._tcp moves to port 443
+ * with TXT tls=1.
+ */
+void discovery_set_web(bool https);
+
 typedef enum
 {
     WIFI_STA_CONNECTION_IDLE,

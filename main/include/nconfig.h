@@ -54,6 +54,7 @@ enum nconfig_type
     SENSOR_PERIOD_MS, ///< Sensor period
     RESTORE_OUTPUT_STATE, ///< Restore the last MAIN/USB output state after power loss.
     OUTPUT_STATE, ///< Last MAIN/USB output state.
+    HTTPS_ENABLED, ///< Serve the web UI over HTTPS ("true") instead of HTTP.
     NCONFIG_TYPE_MAX,   ///< Sentinel for the maximum number of configuration types.
 };
 

@@ -40,6 +40,7 @@ const static char* keys[NCONFIG_TYPE_MAX] = {
     [SENSOR_PERIOD_MS] = "sensor_period",
     [RESTORE_OUTPUT_STATE] = "restore_vout",
     [OUTPUT_STATE] = "vout_state",
+    [HTTPS_ENABLED] = "https",
 };
 
 struct default_value
@@ -69,6 +70,7 @@ struct default_value const default_values[] = {
     {SENSOR_PERIOD_MS, "1000"},
     {RESTORE_OUTPUT_STATE, "false"},
     {OUTPUT_STATE, "00"},
+    {HTTPS_ENABLED, "false"},
 };
 
 esp_err_t init_nconfig()

@@ -3,3 +3,6 @@
 nvs,data,nvs,0x9000,24K,
 phy_init,data,phy,0xf000,4K,
 factory,app,factory,0x10000,2M,
+# HTTPS certificate and key. Placed after the app partition: the merged release image
+# only covers flash up to the end of the app image, so updates keep the certificate.
+tls,data,nvs,0x210000,24K,
