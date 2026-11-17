@@ -30,6 +30,13 @@ const RECOMMENDED_CURRENT_LIMITS_A = {
     MAIN: 7.0,
     USB: 4.0,
 };
+// The firmware holds the power line 3 s and the reset line 1 s by default, and refuses a
+// press while the previous one is held (HTTP 409).
+const BUTTON_HOLD_MS = {power_trigger: 3500, reset_trigger: 1500};
+// The limits as read from the device; Apply sends only the pairs that differ from it.
+let loadedCurrentLimits = null;
+// Only the latest load may update the sliders and Apply: an older one can finish later.
+let currentLimitLoadSeq = 0;
 
 function formatBytes(bytes) {
     if (!Number.isFinite(bytes)) return '-';
@@ -119,7 +126,8 @@ async function refreshDiagnostics() {
             ? 'Static'
             : data.wifi_net_type === 'dhcp' ? 'DHCP' : 'Unknown';
         dom.diagnosticsWifiNetwork.textContent =
-            `${netType} · ${data.wifi_ip_address || 'No IP'}`;
+            `${netType} · ${data.wifi_ip_address || 'No IP'}` +
+            (data.wifi_static_ip_error ? ` (saved static IP not used: ${data.wifi_static_ip_error})` : '');
         dom.diagnosticsWifiRoute.textContent =
             data.wifi_gateway && data.wifi_netmask
                 ? `${data.wifi_gateway} / ${data.wifi_netmask}`
@@ -283,13 +291,58 @@ function currentLimitPairIsValid(name, limitSlider, criticalSlider) {
     return true;
 }
 
+const CURRENT_LIMIT_PAIRS = [
+    ['VIN', 'vin', () => dom.vinSlider, () => dom.vinCriticalSlider],
+    ['Main', 'main', () => dom.mainSlider, () => dom.mainCriticalSlider],
+    ['USB', 'usb', () => dom.usbSlider, () => dom.usbCriticalSlider],
+];
+
+function readCurrentLimits() {
+    const limits = {};
+    for (const [, key, limitSlider, criticalSlider] of CURRENT_LIMIT_PAIRS) {
+        limits[`${key}_current_limit`] = parseFloat(limitSlider().value);
+        limits[`${key}_critical_current_limit`] = parseFloat(criticalSlider().value);
+    }
+    return limits;
+}
+
+function setCurrentLimitsLoaded(loaded) {
+    if (!loaded) loadedCurrentLimits = null;
+    dom.currentLimitApplyButton.disabled = !loaded;
+    if (dom.currentLimitLoadError) dom.currentLimitLoadError.hidden = loaded;
+}
+
+// Locked from Apply until the reload after it settles, which rewrites the sliders: an
+// edit made in between would be lost.
+function setCurrentLimitSlidersDisabled(disabled) {
+    for (const [, , limitSlider, criticalSlider] of CURRENT_LIMIT_PAIRS) {
+        limitSlider().disabled = disabled;
+        criticalSlider().disabled = disabled;
+    }
+}
+
 function loadCurrentLimitSettings() {
+    // Until the device's values are in, the sliders hold their HTML defaults: Apply would
+    // write those over the real limits.
+    setCurrentLimitsLoaded(false);
+    if (dom.currentLimitLoadError) dom.currentLimitLoadError.hidden = true;
+    const seq = ++currentLimitLoadSeq;
     fetch('/api/setting', {
         headers: getAuthHeaders(), // Add auth headers
     })
         .then(handleResponse) // Handle response for 401
         .then(response => response.json())
         .then(data => {
+            if (seq !== currentLimitLoadSeq) return;
+            const keys = CURRENT_LIMIT_PAIRS.flatMap(([, key]) => [`${key}_current_limit`, `${key}_critical_current_limit`]);
+            setCurrentLimitSlidersDisabled(false);
+            if (keys.some(key => typeof data[key] !== 'number')) {
+                throw new Error('current limits missing from /api/setting');
+            }
+            // A max that the last sync lowered would clamp the value assigned below.
+            for (const [, , limitSlider] of CURRENT_LIMIT_PAIRS) {
+                limitSlider().max = limitSlider().dataset.max;
+            }
             if (data.vin_current_limit !== undefined) {
                 dom.vinSlider.value = data.vin_current_limit;
             }
@@ -309,8 +362,40 @@ function loadCurrentLimitSettings() {
                 dom.usbCriticalSlider.value = data.usb_critical_current_limit;
             }
             syncAllCurrentLimitPairs();
+            loadedCurrentLimits = readCurrentLimits();
+            setCurrentLimitsLoaded(true);
         })
-        .catch(error => console.error('Error fetching current limit settings:', error));
+        .catch(error => {
+            console.error('Error fetching current limit settings:', error);
+            if (seq === currentLimitLoadSeq) {
+                setCurrentLimitsLoaded(false);
+                setCurrentLimitSlidersDisabled(false);
+            }
+        });
+}
+
+/** Explains a reply whose status is 'error', from its per-limit results. */
+function currentLimitErrors(data) {
+    const results = data.climit_results ?? {};
+    const lines = Object.entries(results)
+        .filter(([, result]) => result?.status === 'error')
+        .map(([key, result]) => `${key}: ${result.error}`);
+    return lines.length ? lines.join('\n') : (data.message || 'the device reported an error');
+}
+
+function pressButton(button, command) {
+    if (button.disabled) return;
+    button.disabled = true;
+    const hold = BUTTON_HOLD_MS[Object.keys(command)[0]] ?? 1500;
+    api.postControlCommand(command)
+        .then(() => new Promise(resolve => setTimeout(resolve, hold)))
+        .catch(error => {
+            console.error('Error posting button command:', error);
+            alert(`Button press failed: ${error.message}`);
+        })
+        .finally(() => {
+            button.disabled = false;
+        });
 }
 
 function setPowerTogglesDisabled(disabled) {
@@ -353,8 +438,9 @@ export function setupEventListeners() {
     // --- Power Controls ---
     dom.mainPowerToggle.addEventListener('change', () => postPowerToggleCommand({'load_12v_on': dom.mainPowerToggle.checked}));
     dom.usbPowerToggle.addEventListener('change', () => postPowerToggleCommand({'load_5v_on': dom.usbPowerToggle.checked}));
-    dom.resetButton.addEventListener('click', () => api.postControlCommand({'reset_trigger': true}));
-    dom.powerActionButton.addEventListener('click', () => api.postControlCommand({'power_trigger': true}));
+    // Disabled while the line is held: a second press would be refused (409).
+    dom.resetButton.addEventListener('click', () => pressButton(dom.resetButton, {'reset_trigger': true}));
+    dom.powerActionButton.addEventListener('click', () => pressButton(dom.powerActionButton, {'power_trigger': true}));
     if (dom.diagnosticsRefreshButton) {
         dom.diagnosticsRefreshButton.addEventListener('click', refreshDiagnostics);
     }
@@ -412,6 +498,10 @@ export function setupEventListeners() {
         dom.usbCriticalSlider, dom.usbCriticalValueSpan, dom.usbCriticalSlider));
 
     dom.currentLimitApplyButton.addEventListener('click', () => {
+        if (!loadedCurrentLimits) {
+            alert('The current limits were not read from the device. Close and reopen Settings to try again.');
+            return;
+        }
         syncAllCurrentLimitPairs();
         if (!currentLimitPairIsValid('VIN', dom.vinSlider, dom.vinCriticalSlider) ||
             !currentLimitPairIsValid('Main', dom.mainSlider, dom.mainCriticalSlider) ||
@@ -419,14 +509,25 @@ export function setupEventListeners() {
             return;
         }
 
-        const settings = {
-            vin_current_limit: parseFloat(dom.vinSlider.value),
-            main_current_limit: parseFloat(dom.mainSlider.value),
-            usb_current_limit: parseFloat(dom.usbSlider.value),
-            vin_critical_current_limit: parseFloat(dom.vinCriticalSlider.value),
-            main_critical_current_limit: parseFloat(dom.mainCriticalSlider.value),
-            usb_critical_current_limit: parseFloat(dom.usbCriticalSlider.value)
-        };
+        // Only the pairs the user changed: an untouched pair is not rewritten with the
+        // slider's 0.1 A rounding of a value set elsewhere.
+        const current = readCurrentLimits();
+        const settings = {};
+        for (const [, key] of CURRENT_LIMIT_PAIRS) {
+            const limitKey = `${key}_current_limit`;
+            const criticalKey = `${key}_critical_current_limit`;
+            if (current[limitKey] !== loadedCurrentLimits[limitKey] ||
+                current[criticalKey] !== loadedCurrentLimits[criticalKey]) {
+                settings[limitKey] = current[limitKey];
+                settings[criticalKey] = current[criticalKey];
+            }
+        }
+        if (Object.keys(settings).length === 0) {
+            alert('No current limit was changed.');
+            return;
+        }
+        dom.currentLimitApplyButton.disabled = true;
+        setCurrentLimitSlidersDisabled(true);
 
         fetch('/api/setting', {
             method: 'POST',
@@ -440,11 +541,15 @@ export function setupEventListeners() {
             .then(response => response.json())
             .then(data => {
                 console.log('Current limit settings applied:', data);
+                if (data.status === 'error') {
+                    alert(`Some current limits were not applied:\n${currentLimitErrors(data)}`);
+                }
             })
             .catch((error) => {
                 console.error('Error applying current limit settings:', error);
                 alert('Failed to apply current limit settings.');
-            });
+            })
+            .finally(loadCurrentLimitSettings); // show what the device now holds
     });
 
 

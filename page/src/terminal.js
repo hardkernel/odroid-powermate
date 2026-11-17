@@ -44,7 +44,10 @@ export function setupTerminal() {
     }
 
     fitAddon = new FitAddon();
-    term = new Terminal({convertEol: true, cursorBlink: true});
+    // The page theme was applied before this terminal existed, so start in it; xterm's own
+    // default is white text, invisible on the light theme's transparent background.
+    const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+    term = new Terminal({convertEol: true, cursorBlink: true, theme: isDark ? darkTheme : lightTheme});
     term.loadAddon(fitAddon);
     term.open(terminalContainer);
 

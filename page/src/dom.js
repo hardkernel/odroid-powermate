@@ -91,6 +91,7 @@ export const staticGatewayInput = document.getElementById('gateway');
 export const staticNetmaskInput = document.getElementById('netmask');
 export const dns1Input = document.getElementById('dns1');
 export const dns2Input = document.getElementById('dns2');
+export const staticIpError = document.getElementById('static-ip-error');
 
 // --- AP Mode Config Elements ---
 export const apModeToggle = document.getElementById('ap-mode-toggle');
@@ -126,6 +127,7 @@ export const recommendedCurrentLimitWarning = document.getElementById('recommend
 export const recommendedCurrentLimitWarningMessage =
     document.getElementById('recommended-current-limit-warning-message');
 export const currentLimitApplyButton = document.getElementById('current-limit-apply-button');
+export const currentLimitLoadError = document.getElementById('current-limit-load-error');
 
 // --- Footer ---
 export const versionInfo = document.getElementById('version-info');

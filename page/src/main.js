@@ -363,6 +363,12 @@ async function handleUserSettingsSubmit(event) {
         return;
     }
 
+    const utf8Length = (text) => new TextEncoder().encode(text).length;
+    if (utf8Length(newUsername) > 32 || utf8Length(newPassword) > 64) {
+        alert('The username can be at most 32 bytes and the password at most 64 bytes.');
+        return;
+    }
+
     try {
         const response = await api.updateUserSettings(newUsername, newPassword);
         if (response && (response.status === 'ok' || response.auth_status === 'updated')) {

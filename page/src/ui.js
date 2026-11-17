@@ -288,6 +288,9 @@ export async function connectToWifi() {
     }
 }
 
+const IPV4_PATTERN = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const utf8Length = (text) => new TextEncoder().encode(text).length;
+
 /**
  * Applies network settings (Static IP or DHCP) by sending the configuration to the server.
  */
@@ -311,6 +314,15 @@ export async function applyNetworkSettings() {
             dom.networkApplyButton.innerHTML = 'Apply';
             return;
         }
+        // The device checks the rest (netmask, gateway in the subnet) and says what is wrong.
+        const malformed = [['IP Address', ip], ['Gateway', gateway], ['Netmask', subnet], ['DNS Server', dns1],
+            ['Secondary DNS', dns2]].filter(([, value]) => value && !IPV4_PATTERN.test(value)).map(([name]) => name);
+        if (malformed.length) {
+            alert(`Not an IPv4 address (like 192.168.0.10): ${malformed.join(', ')}.`);
+            dom.networkApplyButton.disabled = false;
+            dom.networkApplyButton.innerHTML = 'Apply';
+            return;
+        }
 
         payload = {net_type: 'static', ip, gateway, subnet, dns1};
         if (dns2) payload.dns2 = dns2;
@@ -319,7 +331,10 @@ export async function applyNetworkSettings() {
     }
 
     try {
-        await api.postNetworkSettings(payload);
+        const result = await (await api.postNetworkSettings(payload)).json();
+        if (result.status === 'error') {
+            throw new Error(result.message || 'The device could not apply the network settings.');
+        }
         alert('Network settings applied. Reconnect to the network for changes to take effect.');
         initializeSettings();
     } catch (error) {
@@ -345,8 +360,18 @@ export async function applyApModeSettings() {
         const ap_ssid = dom.apSsidInput.value;
         const ap_password = dom.apPasswordInput.value;
 
+        let problem = null;
         if (!ap_ssid) {
-            alert('AP SSID cannot be empty when enabling APSTA mode.');
+            problem = 'AP SSID cannot be empty when enabling APSTA mode.';
+        } else if (utf8Length(ap_ssid) > 32) {
+            problem = 'AP SSID must be at most 32 bytes.';
+        } else if (ap_password && (ap_password.length < 8 || ap_password.length > 63 ||
+            !/^[\x20-\x7e]+$/.test(ap_password))) {
+            // WPA2 needs 8-63 printable ASCII characters; the Wi-Fi driver refuses others.
+            problem = 'AP password must be 8 to 63 printable ASCII characters, or blank for an open network.';
+        }
+        if (problem) {
+            alert(problem);
             dom.apModeApplyButton.disabled = false;
             dom.apModeApplyButton.innerHTML = 'Apply';
             return;
@@ -465,6 +490,12 @@ export async function initializeSettings() {
         }
         dom.staticIpToggle.checked = data.net_type === 'static';
         dom.staticIpConfig.style.display = dom.staticIpToggle.checked ? 'block' : 'none';
+        // A saved static address the device could not use at boot: it runs on DHCP instead.
+        if (dom.staticIpError) {
+            dom.staticIpError.textContent = data.static_ip_error
+                ? `Saved static IP not used (${data.static_ip_error}); the device is on DHCP.` : '';
+            dom.staticIpError.hidden = !data.static_ip_error;
+        }
 
         // AP Mode Settings
         dom.apModeToggle.checked = data.mode === 'apsta';
