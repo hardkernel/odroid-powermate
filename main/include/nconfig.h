@@ -36,7 +36,6 @@ enum nconfig_type
     WIFI_MODE,          ///< The Wi-Fi operating mode (e.g., "sta" or "apsta").
     AP_SSID,            ///< The SSID for the device's Access Point mode.
     AP_PASSWORD,        ///< The password for the device's Access Point mode.
-    NETIF_HOSTNAME,     ///< The hostname of the device on the network.
     NETIF_IP,           ///< The static IP address for the STA interface.
     NETIF_GATEWAY,      ///< The gateway address for the STA interface.
     NETIF_SUBNET,       ///< The subnet mask for the STA interface.
