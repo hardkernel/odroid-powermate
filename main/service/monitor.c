@@ -62,16 +62,19 @@ static uint16_t last_warning_flags = 0;
 // Shunt resistors, in milliohms.
 static const uint16_t shunt_mohm[INA3221_CHANNELS] = {10, 10, 10};
 
-// All channels, continuous shunt and bus conversions, 16-sample averaging,
-// 140 us bus and 1.1 ms shunt conversion time. One averaged result per channel every
-// 3 x (140 + 1100) us x 16 = 59.5 ms. The warning alert compares these averages, so this
-// window is also the warning cut-off delay; the critical alert checks every single
-// conversion. A shunt conversion takes 1.1 of every 3.72 ms, near the 1/3 maximum for
-// three channels sharing one ADC.
-#define INA3221_CYCLE_US (3 * (140 + 1100) * 16)
-static const uint16_t ina3221_config = INA3221_CONFIG_CH_EN(0) | INA3221_CONFIG_CH_EN(1) | INA3221_CONFIG_CH_EN(2) |
-    INA3221_CONFIG_AVG(INA3221_AVG_16) | INA3221_CONFIG_VBUS_CT(INA3221_CT_140US) |
-    INA3221_CONFIG_VSH_CT(INA3221_CT_1100US) | INA3221_CONFIG_MODE_CONTINUOUS;
+// 16-sample averaging, 140 us bus and 1.1 ms shunt conversion time. One averaged result
+// per channel every 3 x (140 + 1100) us x 16 = 59.5 ms. The warning alert compares these
+// averages, so this window is also the warning cut-off delay; the critical alert checks
+// every single conversion. A shunt conversion takes 1.1 of every 3.72 ms, near the 1/3
+// maximum for three channels sharing one ADC. The critical alert is latched so the
+// shutdown task can still read which channel tripped.
+static const ina3221_config_t ina3221_config = {
+    .avg = INA3221_AVG_16,
+    .bus_ct = INA3221_CT_140US,
+    .shunt_ct = INA3221_CT_1100US,
+    .latch_critical = true,
+    .latch_warning = false,
+};
 
 typedef struct
 {
@@ -81,9 +84,9 @@ typedef struct
 } monitor_channel_t;
 
 static const monitor_channel_t monitor_channels[] = {
-    {.name = "USB", .channel = CHANNEL_USB, .cf_bit = BIT2},   // IN1
-    {.name = "MAIN", .channel = CHANNEL_MAIN, .cf_bit = BIT1}, // IN2
-    {.name = "VIN", .channel = CHANNEL_VIN, .cf_bit = BIT0},   // IN3
+    {.name = "USB", .channel = CHANNEL_USB, .cf_bit = INA3221_FLAG_BIT(CHANNEL_USB)},
+    {.name = "MAIN", .channel = CHANNEL_MAIN, .cf_bit = INA3221_FLAG_BIT(CHANNEL_MAIN)},
+    {.name = "VIN", .channel = CHANNEL_VIN, .cf_bit = INA3221_FLAG_BIT(CHANNEL_VIN)},
 };
 
 static void add_pending_flags(volatile uint16_t* flags, uint16_t value)
@@ -103,7 +106,7 @@ static uint16_t take_pending_flags(volatile uint16_t* flags)
 }
 
 /**
- * Reads the Mask/Enable register. *mask is valid only on ESP_OK.
+ * Reads the status (Mask/Enable register). *status is valid only on ESP_OK.
  *
  * The read clears the latched critical flags, and the sampler reads this register every
  * conversion cycle. So every read parks the critical flags in pending_critical_flags,
@@ -112,12 +115,12 @@ static uint16_t take_pending_flags(volatile uint16_t* flags)
  * The warning flags are not latched here, but the sampler still forwards the ones it sees
  * newly set (see sampler_task), so a read there can never hide a warning from its task.
  */
-static esp_err_t ina3221_get_status(uint16_t* mask)
+static esp_err_t ina3221_get_status(ina3221_status_t* status)
 {
     xSemaphoreTake(status_lock, portMAX_DELAY);
-    esp_err_t err = ina3221_read(INA3221_REG_MASK, mask);
+    esp_err_t err = ina3221_read_status(status);
     if (err == ESP_OK)
-        add_pending_flags(&pending_critical_flags, INA3221_MASK_CF(*mask));
+        add_pending_flags(&pending_critical_flags, status->critical);
     xSemaphoreGive(status_lock);
     return err;
 }
@@ -139,34 +142,23 @@ static void notify_alert_tasks(uint16_t cf, uint16_t wf)
     }
 }
 
-static float climit_raw_to_a(uint8_t channel, uint16_t raw)
+static esp_err_t climit_get_channel_reg(uint8_t channel, ina3221_limit_t limit, float* limit_a, uint16_t* raw)
 {
-    return ina3221_shunt_microvolts(raw) / shunt_mohm[channel] / 1000.0f;
-}
-
-static esp_err_t climit_get_channel_reg(uint8_t channel, uint8_t reg, float* limit_a, uint16_t* raw)
-{
-    uint16_t raw_value;
-    esp_err_t err = ina3221_read(reg, &raw_value);
-    if (err != ESP_OK)
-        return err;
-
-    if (raw)
-        *raw = raw_value;
-    if (limit_a)
-        *limit_a = climit_raw_to_a(channel, raw_value);
-
-    return ESP_OK;
+    float shunt_uv;
+    esp_err_t err = ina3221_get_limit(channel, limit, &shunt_uv, raw);
+    if (err == ESP_OK && limit_a)
+        *limit_a = shunt_uv / shunt_mohm[channel] / 1000.0f; // uV / mOhm = mA
+    return err;
 }
 
 static esp_err_t climit_get_channel(uint8_t channel, float* limit_a, uint16_t* raw)
 {
-    return climit_get_channel_reg(channel, INA3221_REG_WARNING(channel), limit_a, raw);
+    return climit_get_channel_reg(channel, INA3221_LIMIT_WARNING, limit_a, raw);
 }
 
 static esp_err_t climit_get_critical_channel(uint8_t channel, float* limit_a, uint16_t* raw)
 {
-    return climit_get_channel_reg(channel, INA3221_REG_CRITICAL(channel), limit_a, raw);
+    return climit_get_channel_reg(channel, INA3221_LIMIT_CRITICAL, limit_a, raw);
 }
 
 static esp_err_t climit_set_channel(const char* name, const char* label, uint8_t channel, double value,
@@ -188,8 +180,8 @@ static esp_err_t climit_set_channel(const char* name, const char* label, uint8_t
     push_eventf(EV_INFO, "Setting %s %s to: %fmA", name, label, requested_limit_a * 1000.0f);
 
     // mA x mOhm = uV across the shunt.
-    uint16_t limit_raw = ina3221_limit_raw(applied_limit_ma * shunt_mohm[channel]);
-    esp_err_t err = ina3221_write(is_critical ? INA3221_REG_CRITICAL(channel) : INA3221_REG_WARNING(channel), limit_raw);
+    esp_err_t err = ina3221_set_limit(channel, is_critical ? INA3221_LIMIT_CRITICAL : INA3221_LIMIT_WARNING,
+                                      applied_limit_ma * shunt_mohm[channel]);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to write %s %s: %s", name, label, esp_err_to_name(err));
@@ -226,12 +218,12 @@ static esp_err_t climit_set_channel(const char* name, const char* label, uint8_t
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    uint16_t mask_raw = 0;
-    esp_err_t mask_err = ina3221_get_status(&mask_raw);
-    if (mask_err == ESP_OK)
+    ina3221_status_t status;
+    esp_err_t status_err = ina3221_get_status(&status);
+    if (status_err == ESP_OK)
     {
-        ESP_LOGI(TAG, "%s %s status: critical_gpio=%d warning_gpio=%d mask=0x%04x", name, label,
-                 gpio_get_level(PM_INT_CRITICAL), gpio_get_level(PM_INT_WARNING), mask_raw);
+        ESP_LOGI(TAG, "%s %s status: critical_gpio=%d warning_gpio=%d cf=0x%x wf=0x%x", name, label,
+                 gpio_get_level(PM_INT_CRITICAL), gpio_get_level(PM_INT_WARNING), status.critical, status.warning);
     }
 
     return ESP_OK;
@@ -240,16 +232,11 @@ static esp_err_t climit_set_channel(const char* name, const char* label, uint8_t
 /** Latest averaged bus voltage (V) and current (A) of one channel. */
 static esp_err_t read_channel(uint8_t channel, float* voltage, float* current_a)
 {
-    uint16_t bus, shunt;
-    esp_err_t err = ina3221_read(INA3221_REG_BUS(channel), &bus);
+    float shunt_uv;
+    esp_err_t err = ina3221_read_channel(channel, voltage, &shunt_uv);
     if (err == ESP_OK)
-        err = ina3221_read(INA3221_REG_SHUNT(channel), &shunt);
-    if (err != ESP_OK)
-        return err;
-
-    *voltage = ina3221_bus_volts(bus);
-    *current_a = ina3221_shunt_microvolts(shunt) / shunt_mohm[channel] / 1000.0f; // uV / mOhm = mA
-    return ESP_OK;
+        *current_a = shunt_uv / shunt_mohm[channel] / 1000.0f; // uV / mOhm = mA
+    return err;
 }
 
 static esp_err_t read_channel_snapshot(const monitor_channel_t* channel, float* voltage, float* current_a)
@@ -315,7 +302,7 @@ static void push_warning_fault_details(uint16_t wf)
 
 static void disable_warning_fault_load_switches(uint16_t wf)
 {
-    if (wf & BIT0) // CH3 VIN input warning protects all downstream outputs.
+    if (wf & INA3221_FLAG_BIT(CHANNEL_VIN)) // The VIN input warning protects all outputs.
     {
         ESP_LOGW(TAG, "warning action: VIN limit exceeded, disabling all load switches");
         push_eventf(EV_WARNING, "warning action: VIN limit exceeded, disabling all load switches");
@@ -325,7 +312,7 @@ static void disable_warning_fault_load_switches(uint16_t wf)
         return;
     }
 
-    if (wf & BIT1) // CH2 MAIN
+    if (wf & INA3221_FLAG_BIT(CHANNEL_MAIN))
     {
         ESP_LOGW(TAG, "warning action: MAIN limit exceeded, disabling MAIN load switch");
         push_eventf(EV_WARNING, "warning action: MAIN limit exceeded, disabling MAIN load switch");
@@ -334,7 +321,7 @@ static void disable_warning_fault_load_switches(uint16_t wf)
             ESP_LOGW(TAG, "warning action failed: main=%s", esp_err_to_name(err));
     }
 
-    if (wf & BIT2) // CH1 USB
+    if (wf & INA3221_FLAG_BIT(CHANNEL_USB))
     {
         ESP_LOGW(TAG, "warning action: USB limit exceeded, disabling USB load switch");
         push_eventf(EV_WARNING, "warning action: USB limit exceeded, disabling USB load switch");
@@ -383,12 +370,12 @@ static portMUX_TYPE accumulator_mux = portMUX_INITIALIZER_UNLOCKED;
  * after it is notified. So newly set warning flags are handed to it here, whether or not
  * this read would have cleared them; flags that stay set are not sent again.
  */
-static esp_err_t sampler_get_status(uint16_t* mask, uint16_t* last_wf)
+static esp_err_t sampler_get_status(ina3221_status_t* status, uint16_t* last_wf)
 {
-    esp_err_t err = ina3221_get_status(mask);
+    esp_err_t err = ina3221_get_status(status);
     if (err != ESP_OK)
         return err;
-    uint16_t wf = INA3221_MASK_WF(*mask);
+    uint16_t wf = status->warning;
     uint16_t new_wf = wf & ~*last_wf;
     *last_wf = wf;
     if (new_wf)
@@ -399,20 +386,21 @@ static esp_err_t sampler_get_status(uint16_t* mask, uint16_t* last_wf)
 static void sampler_task(void* arg)
 {
     uint16_t last_wf = 0;
+    const TickType_t sleep_ticks = pdMS_TO_TICKS(ina3221_cycle_us(&ina3221_config) / 1000 - 6);
     while (1)
     {
         // Sleep through most of the cycle, then poll the conversion-ready flag.
-        vTaskDelay(pdMS_TO_TICKS(INA3221_CYCLE_US / 1000 - 6));
-        uint16_t mask = 0;
+        vTaskDelay(sleep_ticks);
+        ina3221_status_t status = {0};
         for (int polls = 0; polls < 10; polls++)
         {
-            if (sampler_get_status(&mask, &last_wf) != ESP_OK || (mask & INA3221_MASK_CVRF))
+            if (sampler_get_status(&status, &last_wf) != ESP_OK || status.conversion_ready)
                 break;
             vTaskDelay(pdMS_TO_TICKS(2));
         }
-        // Another reader of the Mask/Enable register (an alert task) can clear the flag
-        // first; that cycle is skipped.
-        if (!(mask & INA3221_MASK_CVRF))
+        // Another reader of the status (an alert task) can clear the flag first; that
+        // cycle is skipped.
+        if (!status.conversion_ready)
             continue;
 
         float voltage[INA3221_CHANNELS], current[INA3221_CHANNELS];
@@ -562,16 +550,16 @@ static void shutdown_load_sw_task(void* pvParameters)
         gpio_set_level(PM_EXPANDER_RST, 0);
 
         ESP_LOGW(TAG, "critical interrupt triggered (via task)");
-        uint16_t mask = 0;
-        esp_err_t status_err = ina3221_get_status(&mask);
+        ina3221_status_t status;
+        esp_err_t status_err = ina3221_get_status(&status);
         // After the status read: it parks the latched flags, and so does every earlier read.
         uint16_t cf = take_pending_flags(&pending_critical_flags);
         bool button_pressed = false;
 
         if (status_err == ESP_OK)
         {
-            cf |= INA3221_MASK_CF(mask); // BIT2=IN1/USB, BIT1=IN2/MAIN, BIT0=IN3/VIN
-            notify_alert_tasks(0, INA3221_MASK_WF(mask));
+            cf |= status.critical; // BIT2=IN1/USB, BIT1=IN2/MAIN, BIT0=IN3/VIN
+            notify_alert_tasks(0, status.warning);
             if (cf)
                 push_critical_fault_sources(cf);
             else
@@ -619,13 +607,13 @@ static void warning_alert_task(void* pvParameters)
 
         ESP_LOGW(TAG, "warning interrupt triggered (via task)");
         uint16_t wf = take_pending_flags(&pending_warning_flags);
-        uint16_t mask = 0;
-        esp_err_t status_err = ina3221_get_status(&mask);
+        ina3221_status_t status;
+        esp_err_t status_err = ina3221_get_status(&status);
 
         if (status_err == ESP_OK)
         {
-            wf |= INA3221_MASK_WF(mask);
-            notify_alert_tasks(INA3221_MASK_CF(mask), 0);
+            wf |= status.warning;
+            notify_alert_tasks(status.critical, 0);
             if (wf)
             {
                 push_warning_fault_details(wf);
@@ -768,8 +756,7 @@ void init_status_monitor()
     status_lock = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(status_lock ? ESP_OK : ESP_ERR_NO_MEM);
     gpio_init();
-    // Latch the critical alert so the shutdown task can still read which channel tripped.
-    ESP_ERROR_CHECK(ina3221_init(INA3221_ADDR, ina3221_config, INA3221_MASK_CEN));
+    ESP_ERROR_CHECK(ina3221_init(INA3221_ADDR, &ina3221_config));
 
     double lim;
     char buf[16];
