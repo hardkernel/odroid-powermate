@@ -21,8 +21,16 @@
 void wifi_init(void);
 
 /**
- * @brief Advertises the PowerMate over mDNS as <CONFIG_LWIP_LOCAL_HOSTNAME>.local with an
- *        HTTP service. Call once after wifi_init(). Failure is logged and not fatal.
+ * @brief The device's network name: CONFIG_LWIP_LOCAL_HOSTNAME followed by the last two
+ *        bytes of the Wi-Fi station MAC, e.g. "odroid-pm-a1b2". DHCP and mDNS both use it,
+ *        so several PowerMates on one network get distinct names.
+ */
+const char* wifi_hostname(void);
+
+/**
+ * @brief Advertises the PowerMate over mDNS as <wifi_hostname()>.local with an HTTP
+ *        service and a _powermate._tcp service for discovery tools. Call once after
+ *        wifi_init(). Failure is logged and not fatal.
  */
 esp_err_t discovery_start(void);
 

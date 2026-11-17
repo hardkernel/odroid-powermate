@@ -8,6 +8,7 @@
 //
 
 #include <assert.h>
+#include <stdio.h>
 #include <string.h>
 #include "esp_event.h"
 #include "esp_log.h"
@@ -273,12 +274,28 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
     }
 }
 
+const char* wifi_hostname(void)
+{
+    static char hostname[sizeof(CONFIG_LWIP_LOCAL_HOSTNAME) + 5];
+    if (hostname[0] == '\0')
+    {
+        uint8_t mac[6] = {0};
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        snprintf(hostname, sizeof(hostname), "%s-%02x%02x", CONFIG_LWIP_LOCAL_HOSTNAME, mac[4], mac[5]);
+    }
+    return hostname;
+}
+
 void wifi_init(void)
 {
     // Create network interfaces for both AP and STA.
     // This is done unconditionally to allow for dynamic mode switching.
-    esp_netif_create_default_wifi_ap();
-    esp_netif_create_default_wifi_sta();
+    esp_netif_t* ap_netif = esp_netif_create_default_wifi_ap();
+    esp_netif_t* sta_netif = esp_netif_create_default_wifi_sta();
+    // Before the interfaces start, so the first DHCP request already carries the name.
+    esp_netif_set_hostname(ap_netif, wifi_hostname());
+    esp_netif_set_hostname(sta_netif, wifi_hostname());
+    ESP_LOGI(TAG, "Hostname: %s", wifi_hostname());
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
