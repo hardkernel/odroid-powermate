@@ -59,6 +59,57 @@ export function setupTerminal() {
     term.onData(data => {
         sendUartMessage(data);
     });
+
+    // Ctrl+C (or Ctrl+Shift+C, Cmd+C) copies the selection; with nothing selected Ctrl+C
+    // still goes to the SBC as an interrupt.
+    term.attachCustomKeyEventHandler(event => {
+        const copyKey = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'c';
+        if (event.type !== 'keydown' || !copyKey || !term.hasSelection()) return true;
+        event.preventDefault();
+        copyToClipboard(term.getSelection());
+        term.clearSelection();
+        return false;
+    });
+}
+
+/** execCommand('copy') through a hidden textarea; the only copy path left on plain HTTP. */
+function legacyCopy(text) {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    let copied = false;
+    try {
+        copied = document.execCommand('copy');
+    } catch {
+        copied = false;
+    }
+    area.remove();
+    term.focus();
+    return copied;
+}
+
+/**
+ * Copies text to the clipboard. The Clipboard API needs HTTPS; on plain HTTP the older
+ * copy command is tried, and when the browser refuses that too the user is told why.
+ */
+async function copyToClipboard(text) {
+    if (window.isSecureContext && navigator.clipboard) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return;
+        } catch (error) {
+            console.warn('Clipboard write failed:', error);
+        }
+    }
+    if (legacyCopy(text)) return;
+    alert(window.isSecureContext
+        ? 'The browser did not allow copying to the clipboard.'
+        : 'Copying is not available over plain HTTP: the browser blocks clipboard access. ' +
+          'Turn on HTTPS in Settings > TLS, or use the download button to save the log.');
 }
 
 /**
