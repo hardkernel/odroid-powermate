@@ -356,8 +356,8 @@ func summarize(samples []sample) powerSummary {
 			sumP += w
 			st.VoltageMin = math.Min(st.VoltageMin, v)
 			st.VoltageMax = math.Max(st.VoltageMax, v)
-			st.CurrentMax = math.Max(st.CurrentMax, a)
-			st.PowerMax = math.Max(st.PowerMax, w)
+			st.CurrentMax = math.Max(st.CurrentMax, float64(ch.PeakCurrent()))
+			st.PowerMax = math.Max(st.PowerMax, float64(ch.PeakPower()))
 			if i > 0 {
 				st.EnergyWh += w * s.At.Sub(samples[i-1].At).Hours()
 			}

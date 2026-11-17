@@ -576,11 +576,11 @@ func (t *tools) currentLimits(ctx context.Context, _ *mcp.CallToolRequest, in li
 	}
 	channels := []channel{
 		{"vin", in.VIN, in.VINCritical, "vin_current_limit", "vin_critical_current_limit", warnMaxVIN, critMaxVIN,
-			peak(func(s sample) float32 { return s.Sensor.VIN.Current })},
+			peak(func(s sample) float32 { return s.Sensor.VIN.PeakCurrent() })},
 		{"main", in.Main, in.MainCritical, "main_current_limit", "main_critical_current_limit", warnMaxMain, critMaxMain,
-			peak(func(s sample) float32 { return s.Sensor.Main.Current })},
+			peak(func(s sample) float32 { return s.Sensor.Main.PeakCurrent() })},
 		{"usb", in.USB, in.USBCritical, "usb_current_limit", "usb_critical_current_limit", warnMaxUSB, critMaxUSB,
-			peak(func(s sample) float32 { return s.Sensor.USB.Current })},
+			peak(func(s sample) float32 { return s.Sensor.USB.PeakCurrent() })},
 	}
 	payload := map[string]any{}
 	window := 0.0

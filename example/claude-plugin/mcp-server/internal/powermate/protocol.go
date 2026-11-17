@@ -23,11 +23,22 @@ const (
 	PayloadEvent
 )
 
+// ChannelData is one channel of a sensor report. Since firmware v1.4.x the values are
+// the mean over the report period and CurrentMax/PowerMax the highest of the INA3221's
+// 59.5 ms averages in it; older firmware sends a snapshot and leaves the maxima zero.
 type ChannelData struct {
-	Voltage float32
-	Current float32
-	Power   float32
+	Voltage    float32
+	Current    float32
+	Power      float32
+	CurrentMax float32
+	PowerMax   float32
 }
+
+// PeakCurrent is CurrentMax, or Current from firmware that does not send it.
+func (c ChannelData) PeakCurrent() float32 { return max(c.Current, c.CurrentMax) }
+
+// PeakPower is PowerMax, or Power from firmware that does not send it.
+func (c ChannelData) PeakPower() float32 { return max(c.Power, c.PowerMax) }
 
 type SensorData struct {
 	USB         ChannelData
@@ -186,7 +197,7 @@ func decodeChannelData(data []byte) (ChannelData, error) {
 		}
 		data = data[tagLen:]
 
-		if number < 1 || number > 3 {
+		if number < 1 || number > 5 {
 			consumed := protowire.ConsumeFieldValue(number, wireType, data)
 			if consumed < 0 {
 				return channel, protowire.ParseError(consumed)
@@ -211,6 +222,10 @@ func decodeChannelData(data []byte) (ChannelData, error) {
 			channel.Current = decoded
 		case 3:
 			channel.Power = decoded
+		case 4:
+			channel.CurrentMax = decoded
+		case 5:
+			channel.PowerMax = decoded
 		}
 	}
 
