@@ -24,6 +24,10 @@ func mustName(t *testing.T, s string) dnsmessage.Name {
 
 // reply builds a PowerMate's answer the way ESP-IDF mdns sends it.
 func reply(t *testing.T, suffix string, withA bool) []byte {
+	return replyWith(t, suffix, withA, 80, []string{"fw=v1.4.0-test"})
+}
+
+func replyWith(t *testing.T, suffix string, withA bool, port uint16, txt []string) []byte {
 	instance := mustName(t, "ODROID PowerMate "+suffix+"."+powermateService)
 	host := mustName(t, "odroid-pm-"+suffix+".local.")
 	b := dnsmessage.NewBuilder(nil, dnsmessage.Header{Response: true, Authoritative: true})
@@ -34,8 +38,8 @@ func reply(t *testing.T, suffix string, withA bool) []byte {
 	}
 	b.PTRResource(hdr(mustName(t, powermateService)), dnsmessage.PTRResource{PTR: instance})
 	b.StartAdditionals()
-	b.SRVResource(hdr(instance), dnsmessage.SRVResource{Port: 80, Target: host})
-	b.TXTResource(hdr(instance), dnsmessage.TXTResource{TXT: []string{"fw=v1.4.0-test"}})
+	b.SRVResource(hdr(instance), dnsmessage.SRVResource{Port: port, Target: host})
+	b.TXTResource(hdr(instance), dnsmessage.TXTResource{TXT: txt})
 	if withA {
 		b.AResource(hdr(host), dnsmessage.AResource{A: [4]byte{192, 168, 30, 4}})
 	}
@@ -55,7 +59,7 @@ func TestParseAnswer(t *testing.T) {
 	}
 	got := found["ODROID PowerMate b0f4."+powermateService]
 	want := Discovered{Name: "ODROID PowerMate b0f4", Hostname: "odroid-pm-b0f4.local", Address: "192.168.30.4",
-		Port: 80, Firmware: "v1.4.0-test"}
+		Port: 80, URL: "http://192.168.30.4", Firmware: "v1.4.0-test"}
 	if got == nil || *got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
@@ -79,5 +83,14 @@ func TestDiscoverLive(t *testing.T) {
 	}
 	if len(list) == 0 {
 		t.Fatal("no PowerMate answered")
+	}
+}
+
+func TestParseAnswerHTTPS(t *testing.T) {
+	found := map[string]*Discovered{}
+	parseAnswer(replyWith(t, "b0f4", true, 443, []string{"fw=v1.4.1", "tls=1"}), nil, found)
+	d := found["ODROID PowerMate b0f4."+powermateService]
+	if d == nil || !d.TLS || d.Port != 443 || d.URL != "https://192.168.30.4" {
+		t.Fatalf("got %+v, want TLS on 443 at https://192.168.30.4", d)
 	}
 }

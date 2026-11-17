@@ -46,8 +46,15 @@ type TokenStore interface {
 }
 
 type Client struct {
-	baseURL    *url.URL
+	urlMu     sync.RWMutex
+	baseURL   *url.URL
+	resolveMu sync.Mutex
+	resolved  bool // the scheme (http or https) is known
+
 	httpClient *http.Client
+	transport  *http.Transport
+	wsDialer   *websocket.Dialer
+	pin        string
 	username   string
 	password   string
 	tokens     TokenStore
@@ -76,10 +83,20 @@ type Settings struct {
 	RestoreOutputState bool   `json:"restore_output_state"`
 }
 
-func NewClient(host, username, password string, tokens TokenStore) (*Client, error) {
+// NewClient creates a client for the PowerMate at host ("192.168.4.1", "http://...",
+// "https://..."). pin is the SHA-256 fingerprint of its certificate when it serves a
+// self-signed one over HTTPS; empty trusts what this computer trusts.
+//
+// Without https://, the first request finds out whether the device runs HTTP or HTTPS
+// by asking without credentials; nothing secret is sent before the scheme is known.
+func NewClient(host, username, password string, tokens TokenStore, pin string) (*Client, error) {
 	host = strings.TrimSpace(host)
 	if host == "" {
 		return nil, errors.New("host is required")
+	}
+	pin, err := NormalizeFingerprint(pin)
+	if err != nil {
+		return nil, err
 	}
 	if !strings.Contains(host, "://") {
 		host = "http://" + host
@@ -97,12 +114,28 @@ func NewClient(host, username, password string, tokens TokenStore) (*Client, err
 	}
 	baseURL.Path = strings.TrimRight(baseURL.Path, "/")
 
+	tlsConfig := newTLSConfig(baseURL.Host, pin)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = tlsConfig
 	c := &Client{
-		baseURL:    baseURL,
-		httpClient: &http.Client{Timeout: 8 * time.Second},
-		username:   username,
-		password:   password,
-		tokens:     tokens,
+		baseURL:   baseURL,
+		resolved:  baseURL.Scheme == "https",
+		transport: transport,
+		pin:       pin,
+		httpClient: &http.Client{
+			Timeout:   8 * time.Second,
+			Transport: transport,
+			// Never follow a redirect: it would resend the token, possibly in clear.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		},
+		wsDialer: &websocket.Dialer{
+			Proxy:            http.ProxyFromEnvironment,
+			HandshakeTimeout: 45 * time.Second,
+			TLSClientConfig:  tlsConfig,
+		},
+		username: username,
+		password: password,
+		tokens:   tokens,
 	}
 	if tokens != nil {
 		c.token = tokens.Load()
@@ -110,9 +143,97 @@ func NewClient(host, username, password string, tokens TokenStore) (*Client, err
 	return c, nil
 }
 
-// Host returns the device address as configured.
+// Host returns the device address (host[:port]).
 func (c *Client) Host() string {
-	return c.baseURL.Host
+	return c.base().Host
+}
+
+// URL returns the device's base URL, https:// once the device was found to serve HTTPS.
+func (c *Client) URL() string {
+	base := c.base()
+	return base.String()
+}
+
+// Pin returns the pinned certificate fingerprint, if any.
+func (c *Client) Pin() string {
+	return c.pin
+}
+
+func (c *Client) base() url.URL {
+	c.urlMu.RLock()
+	defer c.urlMu.RUnlock()
+	return *c.baseURL
+}
+
+func (c *Client) isResolved() bool {
+	c.urlMu.RLock()
+	defer c.urlMu.RUnlock()
+	return c.resolved
+}
+
+func (c *Client) unresolve() {
+	c.urlMu.Lock()
+	defer c.urlMu.Unlock()
+	if c.baseURL.Scheme == "http" {
+		c.resolved = false
+	}
+}
+
+// resolve finds out once whether the device serves HTTP or HTTPS: a GET without
+// credentials that is not followed. With HTTPS on, the device's port 80 answers every
+// GET with a redirect to https://; only one to the same host is accepted.
+func (c *Client) resolve(ctx context.Context) error {
+	if c.isResolved() {
+		return nil
+	}
+	c.resolveMu.Lock()
+	defer c.resolveMu.Unlock()
+	if c.isResolved() {
+		return nil
+	}
+	base := c.base()
+	probe := base
+	probe.Path = strings.TrimRight(probe.Path, "/") + "/api/version"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, probe.String(), nil)
+	if err != nil {
+		return err
+	}
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	io.Copy(io.Discard, io.LimitReader(response.Body, maxHTTPResponseBytes))
+	response.Body.Close()
+
+	if response.StatusCode >= 300 && response.StatusCode < 400 {
+		location, err := response.Location()
+		if err != nil {
+			return fmt.Errorf("redirect without a location: %w", err)
+		}
+		if location.Scheme != "https" || location.Hostname() != base.Hostname() {
+			return fmt.Errorf("the device redirects to %s; only https:// on the same host is followed", location)
+		}
+		base.Scheme = "https"
+		base.Host = location.Host
+	}
+	c.urlMu.Lock()
+	c.baseURL = &base
+	c.resolved = true
+	c.urlMu.Unlock()
+	return nil
+}
+
+// explain adds what to do to errors that have a likely cause on the PowerMate side.
+func (c *Client) explain(err error) error {
+	var certErr *CertError
+	if err == nil || errors.As(err, &certErr) {
+		return err
+	}
+	if base := c.base(); base.Scheme == "https" && strings.Contains(err.Error(), "connection refused") {
+		return fmt.Errorf("%w (nothing answers HTTPS at %s: if HTTPS was turned off on the PowerMate, use http://%s)",
+			err, base.Host, base.Hostname())
+	}
+	return err
 }
 
 // CloseIdleConnections drops idle keep-alive connections, which still hold one of
@@ -133,6 +254,9 @@ func (c *Client) refreshToken(ctx context.Context, stale string) error {
 	// brought us here), but the transport may still hand that dead keep-alive
 	// connection to the login POST, which is not retried. Start from fresh connections.
 	c.httpClient.CloseIdleConnections()
+	if err := c.resolve(ctx); err != nil {
+		return c.explain(err)
+	}
 
 	payload, err := json.Marshal(map[string]string{
 		"username": c.username,
@@ -150,7 +274,7 @@ func (c *Client) refreshToken(ctx context.Context, stale string) error {
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
-		return fmt.Errorf("login request: %w", err)
+		return fmt.Errorf("login request: %w", c.explain(err))
 	}
 	defer response.Body.Close()
 
@@ -237,7 +361,8 @@ func (c *Client) ScanWiFi(ctx context.Context) ([]AccessPoint, error) {
 	// A scan blocks the firmware for several seconds.
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	err := c.doJSONClient(ctx, &http.Client{Timeout: 20 * time.Second}, http.MethodGet, "/api/wifi/scan", nil, &result, true)
+	scanClient := &http.Client{Timeout: 20 * time.Second, Transport: c.transport, CheckRedirect: c.httpClient.CheckRedirect}
+	err := c.doJSONClient(ctx, scanClient, http.MethodGet, "/api/wifi/scan", nil, &result, true)
 	return result, err
 }
 
@@ -280,6 +405,9 @@ func (c *Client) doJSONClient(
 	responseBody any,
 	retryAuth bool,
 ) error {
+	if err := c.resolve(ctx); err != nil {
+		return c.explain(err)
+	}
 	var encoded []byte
 	var err error
 	if requestBody != nil {
@@ -303,10 +431,16 @@ func (c *Client) doJSONClient(
 
 	response, err := httpClient.Do(request)
 	if err != nil {
-		return err
+		return c.explain(err)
 	}
 	defer response.Body.Close()
 
+	if response.StatusCode >= 300 && response.StatusCode < 400 && retryAuth {
+		// HTTPS was turned on since the scheme was resolved: find it again.
+		io.Copy(io.Discard, io.LimitReader(response.Body, maxHTTPResponseBytes))
+		c.unresolve()
+		return c.doJSONClient(ctx, httpClient, method, path, requestBody, responseBody, false)
+	}
 	if response.StatusCode == http.StatusUnauthorized && retryAuth {
 		io.Copy(io.Discard, io.LimitReader(response.Body, maxHTTPResponseBytes))
 		if err := c.refreshToken(ctx, token); err != nil {
@@ -510,7 +644,10 @@ func (c *Client) startWebSocketHeartbeat(
 }
 
 func (c *Client) dialWebSocket(ctx context.Context, path, token string) (*websocket.Conn, *http.Response, error) {
-	wsURL := *c.baseURL
+	if err := c.resolve(ctx); err != nil {
+		return nil, nil, c.explain(err)
+	}
+	wsURL := c.base()
 	if wsURL.Scheme == "https" {
 		wsURL.Scheme = "wss"
 	} else {
@@ -521,11 +658,15 @@ func (c *Client) dialWebSocket(ctx context.Context, path, token string) (*websoc
 	query.Set("token", token)
 	wsURL.RawQuery = query.Encode()
 
-	return websocket.DefaultDialer.DialContext(ctx, wsURL.String(), nil)
+	conn, response, err := c.wsDialer.DialContext(ctx, wsURL.String(), nil)
+	if response != nil && response.StatusCode >= 300 && response.StatusCode < 400 {
+		c.unresolve() // HTTPS was turned on: the next attempt finds it
+	}
+	return conn, response, c.explain(err)
 }
 
 func (c *Client) endpoint(path string) string {
-	endpoint := *c.baseURL
+	endpoint := c.base()
 	endpoint.Path = strings.TrimRight(endpoint.Path, "/") + path
 	return endpoint.String()
 }

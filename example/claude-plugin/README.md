@@ -43,6 +43,7 @@ from the shell that starts Claude Code:
 | Variable | Default | |
 |---|---|---|
 | `POWERMATE_HOST` | saved address | PowerMate address. When unset, the server uses the address saved by `powermate_connect`. With neither, the tools ask the agent to let the user pick one from `powermate_discover` or give the address. |
+| `POWERMATE_TLS_FINGERPRINT` | none | Optional SHA-256 fingerprint of the `POWERMATE_HOST` PowerMate's HTTPS certificate (Settings > TLS in its web UI). When set, any other certificate is refused. |
 | `POWERMATE_USERNAME` | `admin` | PowerMate web login |
 | `POWERMATE_PASSWORD` | `password` | PowerMate web login |
 | `POWERMATE_IDLE_MINUTES` | `10` | Close the PowerMate streams after this many minutes without a tool call. `0` keeps them open. |
@@ -51,7 +52,14 @@ from the shell that starts Claude Code:
 export POWERMATE_HOST=192.168.30.4
 ```
 
-Login tokens, the saved PowerMate address, and capture logs are stored in the
+HTTPS: the server finds out whether the PowerMate serves HTTP or HTTPS by asking it once
+without credentials, and uses `https://`/`wss://` from then on. The PowerMate's certificate
+(usually self-signed) is accepted as it is: the traffic is encrypted, but which device
+answers is not checked. To check it, pin its fingerprint with `POWERMATE_TLS_FINGERPRINT` or
+`powermate_connect(tls_fingerprint=...)`; it is saved per PowerMate. TLS sessions are
+resumed, so reconnecting takes ~50 ms instead of ~0.7 s.
+
+Login tokens, the saved PowerMate address and certificate fingerprints, and capture logs are stored in the
 plugin data directory (`${CLAUDE_PLUGIN_DATA}`), or in `~/.cache/powermate-mcp`
 when that variable is not provided. The token is reused across sessions, because the
 firmware keeps only four tokens and evicts the oldest. Without this, every new

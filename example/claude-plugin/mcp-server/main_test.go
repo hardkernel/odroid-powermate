@@ -40,13 +40,13 @@ func TestUseDeviceWithoutAddress(t *testing.T) {
 	if res := call("powermate_discover"); res.IsError || reached != "powermate_discover" {
 		t.Fatalf("powermate_discover blocked without an address")
 	}
-	if _, err := m.connect(context.Background(), "", true); err == nil {
+	if _, err := m.connect(context.Background(), "", "", true); err == nil {
 		t.Fatal("empty host accepted")
 	}
 }
 
 func TestDeviceClosesStreamsWhenIdle(t *testing.T) {
-	client, err := powermate.NewClient("127.0.0.1:1", "admin", "password", nil)
+	client, err := powermate.NewClient("127.0.0.1:1", "admin", "password", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,5 +81,20 @@ func TestDeviceClosesStreamsWhenIdle(t *testing.T) {
 	d.release()
 	if !open() || len(d.eventsSince(time.Time{})) != 1 {
 		t.Fatalf("reopen: open=%v events=%v", open(), d.eventsSince(time.Time{}))
+	}
+}
+
+func TestHostKey(t *testing.T) {
+	for in, want := range map[string]string{
+		"192.168.30.4":                 "192.168.30.4",
+		"http://192.168.30.4":          "192.168.30.4",
+		"https://192.168.30.4/":        "192.168.30.4",
+		"https://odroid-pm-b0f4.local": "odroid-pm-b0f4.local",
+		"http://10.0.0.5:8080":         "10.0.0.5",
+		"10.0.0.5:443":                 "10.0.0.5",
+	} {
+		if got := hostKey(in); got != want {
+			t.Errorf("hostKey(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

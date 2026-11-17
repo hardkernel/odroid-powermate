@@ -177,8 +177,9 @@ func (t *tools) settings(ctx context.Context, _ *mcp.CallToolRequest, _ statusIn
 // ---- powermate_connect ----
 
 type connectIn struct {
-	Host string `json:"host" jsonschema:"PowerMate IP address or host name"`
-	Save *bool  `json:"save,omitempty" jsonschema:"remember for the next session (default true)"`
+	Host           string `json:"host" jsonschema:"PowerMate IP address or host name (http:// or https:// optional; found automatically)"`
+	TLSFingerprint string `json:"tls_fingerprint,omitempty" jsonschema:"optional: SHA-256 fingerprint of the PowerMate's HTTPS certificate (Settings > TLS); when given, any other certificate is refused. Only when the user asks for it"`
+	Save           *bool  `json:"save,omitempty" jsonschema:"remember for the next session (default true)"`
 }
 
 type connectOut struct {
@@ -191,11 +192,19 @@ type connectOut struct {
 func (t *tools) connect(ctx context.Context, _ *mcp.CallToolRequest, in connectIn) (*mcp.CallToolResult, connectOut, error) {
 	prev, source := t.m.hostInfo()
 	save := in.Save == nil || *in.Save
-	version, err := t.m.connect(ctx, strings.TrimSpace(in.Host), save)
+	version, err := t.m.connect(ctx, strings.TrimSpace(in.Host), in.TLSFingerprint, save)
+	var certErr *powermate.CertError
+	if errors.As(err, &certErr) {
+		// A pinned certificate changed: never replace the pin on the agent's own judgement.
+		return nil, connectOut{Previous: prev}, fmt.Errorf("%w. Tell the user; if they confirm the PowerMate got a "+
+			"new certificate (Settings > TLS shows its SHA-256), call powermate_connect again with tls_fingerprint=%q",
+			certErr, powermate.FormatFingerprint(certErr.Fingerprint))
+	}
 	if err != nil {
 		return nil, connectOut{Previous: prev}, err
 	}
-	out := connectOut{Host: in.Host, Previous: prev, Firmware: version}
+	host, _ := t.m.hostInfo()
+	out := connectOut{Host: host, Previous: prev, Firmware: version}
 	if source == "env" {
 		out.Note = "POWERMATE_HOST is set in the environment and will win again next session; " +
 			"update or unset it to keep this address."
@@ -232,7 +241,7 @@ func (t *tools) discover(ctx context.Context, _ *mcp.CallToolRequest, in discove
 			"through its setup AP (powermate / 192.168.4.1)."
 	} else {
 		out.Note = "Show this list to the user and ask which PowerMate to use; then call powermate_connect with its " +
-			"address. Do not choose one for them."
+			"url. Do not choose one for them. tls=true means it serves HTTPS."
 	}
 	return nil, out, nil
 }
@@ -419,9 +428,10 @@ func (t *tools) network(ctx context.Context, _ *mcp.CallToolRequest, in networkI
 	if dropped {
 		out.Notes = append(out.Notes, droppedNote)
 	}
-	if in.Mode == "static" && (in.SwitchHost == nil || *in.SwitchHost) && host == ipOf(cur) && in.IP != host {
+	if in.Mode == "static" && (in.SwitchHost == nil || *in.SwitchHost) && hostKey(host) == ipOf(cur) && in.IP != hostKey(host) {
 		time.Sleep(2 * time.Second)
-		if v, err := t.m.connect(ctx, in.IP, true); err == nil {
+		// Same device, same certificate: keep its pin for the new address.
+		if v, err := t.m.connect(ctx, in.IP, t.m.current().client.Pin(), true); err == nil {
 			out.Notes = append(out.Notes, "Tools now use "+in.IP+" (firmware "+v+").")
 		} else {
 			out.Warnings = append(out.Warnings, "could not reach the new address yet: "+err.Error())
@@ -523,7 +533,7 @@ func (t *tools) wifiMode(ctx context.Context, _ *mcp.CallToolRequest, in wifiMod
 			return nil, adminOut{}, errors.New("the STA link is not connected; switching to sta now would leave " +
 				"no network path to the PowerMate. Connect it to Wi-Fi first")
 		}
-		if host == "192.168.4.1" {
+		if hostKey(host) == "192.168.4.1" {
 			return nil, adminOut{}, errors.New("the tools reach the PowerMate through its AP; switch to its STA " +
 				"address with powermate_connect first")
 		}

@@ -13,6 +13,9 @@
 //	                    to let the user pick a discovered PowerMate or give an address.
 //	POWERMATE_USERNAME  web login (default "admin")
 //	POWERMATE_PASSWORD  web login (default "password")
+//	POWERMATE_TLS_FINGERPRINT optional SHA-256 fingerprint of the POWERMATE_HOST
+//	                    device's HTTPS certificate (Settings > TLS in its web UI);
+//	                    when set, any other certificate is refused
 //	POWERMATE_STATE_DIR token cache and capture logs (default: user cache dir)
 //	POWERMATE_IDLE_MINUTES close the PowerMate streams after this long without a
 //	                    tool call (default 10; 0 keeps them open)
@@ -33,6 +36,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/hardkernel/odroid-powermate/example/claude-plugin/mcp-server/internal/powermate"
 )
 
 var version = "dev"
@@ -110,6 +115,12 @@ func main() {
 	// powermate_connect. There is no default: a guessed address would point the
 	// tools at whatever answers there.
 	host, source := getenv("POWERMATE_HOST", ""), "env"
+	m.envHost = host
+	if pin, err := powermate.NormalizeFingerprint(getenv("POWERMATE_TLS_FINGERPRINT", "")); err != nil {
+		log.Fatalf("POWERMATE_TLS_FINGERPRINT: %v", err)
+	} else {
+		m.envPin = pin
+	}
 	if host == "" {
 		host, source = m.savedHost(), "saved"
 	}
@@ -125,7 +136,8 @@ func main() {
 			"unless confirm=true. sbc_power off/cycle is a hard power cut. Console output is buffered " +
 			"continuously; use cursors from one tool as 'since' in the next to avoid missing output. " +
 			"If no PowerMate address is configured, call powermate_discover, show the user the PowerMates it finds " +
-			"and let them pick one (or give an address), then call powermate_connect; never guess one.",
+			"and let them pick one (or give an address), then call powermate_connect; never guess one. " +
+			"A PowerMate with HTTPS on is found and used automatically.",
 	})
 	server.AddReceivingMiddleware(useDevice(m))
 	t := &tools{m: m, logDir: filepath.Join(stateDir, "logs")}

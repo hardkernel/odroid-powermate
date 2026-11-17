@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -409,6 +410,8 @@ func roundStats(st *channelStats) {
 type manager struct {
 	root     context.Context
 	stateDir string
+	envHost  string // POWERMATE_HOST
+	envPin   string // POWERMATE_TLS_FINGERPRINT, for envHost
 
 	idle time.Duration // close the streams after this long without a tool call
 
@@ -433,15 +436,59 @@ func (m *manager) hostInfo() (string, string) {
 	return m.host, m.source
 }
 
-func (m *manager) newClient(host string) (*powermate.Client, error) {
+// hostKey is the device part of an address ("https://10.0.0.5:443" -> "10.0.0.5"), so
+// the token and the certificate pin follow the device across http:// and https://.
+func hostKey(host string) string {
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	host = strings.TrimRight(host, "/")
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
+}
+
+func (m *manager) newClient(host, pin string) (*powermate.Client, error) {
+	if pin == "" {
+		pin = m.savedPin(host)
+	}
 	return powermate.NewClient(host, m.username, m.password,
-		fileTokenStore{path: filepath.Join(m.stateDir, "token-"+sanitize(host))})
+		fileTokenStore{path: filepath.Join(m.stateDir, "token-"+sanitize(hostKey(host)))}, pin)
+}
+
+func (m *manager) pinPath(host string) string {
+	return filepath.Join(m.stateDir, "tls-"+sanitize(hostKey(host)))
+}
+
+// savedPin is the certificate fingerprint the user confirmed for host:
+// POWERMATE_TLS_FINGERPRINT for the POWERMATE_HOST device, else the one saved by
+// powermate_connect.
+func (m *manager) savedPin(host string) string {
+	if m.envPin != "" && hostKey(host) == hostKey(m.envHost) {
+		return m.envPin
+	}
+	data, err := os.ReadFile(m.pinPath(host))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func (m *manager) savePin(host, pin string) {
+	err := os.MkdirAll(m.stateDir, 0o700)
+	if err == nil {
+		err = os.WriteFile(m.pinPath(host), []byte(pin+"\n"), 0o600)
+	}
+	if err != nil {
+		log.Printf("save certificate fingerprint: %v", err)
+	}
 }
 
 // start connects to host without probing it first (used at startup, when the
 // PowerMate may simply not be up yet).
 func (m *manager) start(host, source string) error {
-	client, err := m.newClient(host)
+	client, err := m.newClient(host, "")
 	if err != nil {
 		return err
 	}
@@ -449,14 +496,16 @@ func (m *manager) start(host, source string) error {
 	return nil
 }
 
-// connect probes host and, if a PowerMate answers, makes it the current device.
-func (m *manager) connect(ctx context.Context, host string, save bool) (string, error) {
+// connect probes host and, if a PowerMate answers, makes it the current device. pin is
+// a certificate fingerprint the user confirmed; it is saved for the device on success.
+func (m *manager) connect(ctx context.Context, host, pin string, save bool) (string, error) {
 	// Reconnecting to the current address would throw away the console buffer and
 	// power history for nothing, so keep the device when it still answers.
 	if host == "" {
 		return "", fmt.Errorf("host is empty: ask the user for the PowerMate address")
 	}
-	if cur, _ := m.hostInfo(); cur == host {
+	// The current host is stored as found (http:// or https://); compare the device part.
+	if cur, _ := m.hostInfo(); hostKey(cur) == hostKey(host) && pin == "" {
 		probe, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 		if v, err := m.current().client.GetVersion(probe); err == nil {
@@ -464,7 +513,7 @@ func (m *manager) connect(ctx context.Context, host string, save bool) (string, 
 			return v.Version, nil
 		}
 	}
-	client, err := m.newClient(host)
+	client, err := m.newClient(host, pin)
 	if err != nil {
 		return "", err
 	}
@@ -474,8 +523,13 @@ func (m *manager) connect(ctx context.Context, host string, save bool) (string, 
 	if err != nil {
 		return "", fmt.Errorf("no PowerMate API at %s: %w", host, err)
 	}
-	m.swap(client, host, "tool")
-	m.saveHost(host, save)
+	// Keep the address as found (https:// once the device serves HTTPS), so the next
+	// session goes straight to it.
+	m.swap(client, client.URL(), "tool")
+	m.saveHost(client.URL(), save)
+	if client.Pin() != "" && pin != "" {
+		m.savePin(host, client.Pin())
+	}
 	return version.Version, nil
 }
 

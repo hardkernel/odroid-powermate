@@ -50,6 +50,13 @@ the address (shown in the PowerMate web UI or the router's DHCP list). Then call
 `powermate_connect(host=...)`. Never guess one or choose for the user. A PowerMate that is
 not on the network yet needs the factory-fresh setup below first.
 
+A PowerMate with HTTPS on (Settings > TLS in its web UI) is found automatically: the tools
+ask it without credentials whether it serves HTTPS and use `https://` from then on
+(`powermate_discover` shows `tls: true` and an `https://` url). Its certificate is accepted
+as it is. Only if the user asks to pin it, pass its SHA-256 (Settings > TLS) as
+`powermate_connect(host=..., tls_fingerprint=...)`; the tools then refuse any other
+certificate for that PowerMate and report it, and you ask the user before pinning a new one.
+
 ## Cursors
 
 Every console tool returns a `cursor`. Pass it as `since` to the next call when timing

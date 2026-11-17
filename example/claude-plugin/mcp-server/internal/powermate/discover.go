@@ -10,6 +10,7 @@ package powermate
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"sort"
@@ -30,6 +31,8 @@ type Discovered struct {
 	Hostname string `json:"hostname"` // e.g. "odroid-pm-b0f4.local"
 	Address  string `json:"address"`  // IPv4 address to connect to
 	Port     int    `json:"port"`
+	TLS      bool   `json:"tls"` // the web UI and API are served over HTTPS
+	URL      string `json:"url"` // base URL to connect to, e.g. https://192.168.30.4
 	Firmware string `json:"firmware,omitempty"`
 }
 
@@ -169,6 +172,9 @@ func parseAnswer(packet []byte, from *net.UDPAddr, found map[string]*Discovered)
 					if v, ok := strings.CutPrefix(kv, "fw="); ok {
 						d.Firmware = v
 					}
+					if kv == "tls=1" {
+						d.TLS = true
+					}
 				}
 			}
 		}
@@ -184,7 +190,23 @@ func parseAnswer(packet []byte, from *net.UDPAddr, found map[string]*Discovered)
 		if d.Port == 0 {
 			d.Port = 80
 		}
+		d.TLS = d.TLS || d.Port == 443
+		d.URL = baseURL(d.Address, d.Port, d.TLS)
 	}
+}
+
+func baseURL(address string, port int, tls bool) string {
+	if address == "" {
+		return ""
+	}
+	scheme, defaultPort := "http", 80
+	if tls {
+		scheme, defaultPort = "https", 443
+	}
+	if port == defaultPort {
+		return scheme + "://" + address
+	}
+	return fmt.Sprintf("%s://%s:%d", scheme, address, port)
 }
 
 // instanceLabel turns "ODROID\ PowerMate\ b0f4._powermate._tcp.local." into "ODROID PowerMate b0f4".
