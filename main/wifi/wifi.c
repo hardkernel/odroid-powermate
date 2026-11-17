@@ -224,6 +224,9 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
     {
         led_set(LED_BLU, BLINK_TRIPLE);
         wifi_event_sta_disconnected_t* event = (wifi_event_sta_disconnected_t*)event_data;
+        // Every local disconnect (disconnect, scan, new credentials, mode switch) cancels the
+        // connection request first. With the request still standing, the AP ended the link.
+        bool connect_requested = s_sta_connect_requested;
         s_sta_connect_requested = false;
         s_sta_connected = false;
         s_sta_last_disconnect_reason = event->reason;
@@ -235,11 +238,19 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base, int32_t e
         // A previously working connection must keep retrying after transient RF errors.
         bool configuration_error =
             s_sta_credentials_pending_validation && reconnect_is_configuration_error(event->reason);
+        // Reasons 8 and 36 also come from APs and mesh systems that drop or steer a station,
+        // so they mean "we left" only when no connection was requested.
+        bool local_leave = !connect_requested && (event->reason == WIFI_REASON_ASSOC_LEAVE ||
+                                                  event->reason == WIFI_REASON_STA_LEAVING);
         if (configuration_error)
         {
             wifi_set_sta_connection_state(WIFI_STA_CONNECTION_FAILED, event->reason);
         }
-        else if (event->reason != WIFI_REASON_ASSOC_LEAVE && event->reason != WIFI_REASON_STA_LEAVING)
+        else if (local_leave)
+        {
+            wifi_set_sta_connection_state(WIFI_STA_CONNECTION_IDLE, WIFI_REASON_UNSPECIFIED);
+        }
+        else
         {
             if (s_auto_reconnect && !nconfig_value_is_not_set(WIFI_SSID))
             {
@@ -337,7 +348,9 @@ void wifi_init(void)
 
     if (mode == WIFI_MODE_APSTA)
     {
-        wifi_init_ap();
+        // A failure leaves the driver's default AP; the STA side still starts.
+        if (wifi_init_ap() != ESP_OK)
+            ESP_LOGE(TAG, "Setup AP not configured");
         wifi_init_sta();
     }
     else if (mode == WIFI_MODE_STA)
@@ -375,6 +388,7 @@ esp_err_t wifi_switch_mode(const char* mode)
     wifi_set_auto_reconnect(false);
     wifi_cancel_sta_connection();
 
+    esp_err_t ap_err = ESP_OK;
     esp_err_t err = esp_wifi_stop();
     if (err != ESP_OK)
     {
@@ -391,7 +405,8 @@ esp_err_t wifi_switch_mode(const char* mode)
 
     if (new_mode == WIFI_MODE_APSTA)
     {
-        wifi_init_ap();
+        // Wi-Fi is restarted either way, so a refused AP config never leaves it stopped.
+        ap_err = wifi_init_ap();
         wifi_init_sta();
     }
     else if (new_mode == WIFI_MODE_STA)
@@ -422,5 +437,6 @@ out:
     if (err == ESP_OK)
         ESP_LOGI(TAG, "Wi-Fi mode switched to %s", mode);
 
-    return err;
+    // A refused AP config is reported, though the switch itself went through.
+    return err == ESP_OK ? ap_err : err;
 }

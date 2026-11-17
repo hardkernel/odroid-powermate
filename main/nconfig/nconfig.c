@@ -49,6 +49,13 @@ struct default_value
     const char* value;
 };
 
+// For these an empty stored value is a setting of its own, so the default only fills a
+// missing key: an empty AP password is an open AP, an empty DNS2 is no backup DNS server.
+static bool empty_is_set(enum nconfig_type type)
+{
+    return type == AP_PASSWORD || type == NETIF_DNS2;
+}
+
 struct default_value const default_values[] = {
     {WIFI_SSID, ""},
     {WIFI_PASSWORD, ""},
@@ -57,8 +64,8 @@ struct default_value const default_values[] = {
     {NETIF_DNS1, "8.8.8.8"},
     {NETIF_DNS2, "8.8.4.4"},
     {WIFI_MODE, "apsta"},
-    {AP_SSID, "powermate"},
-    {AP_PASSWORD, "hardkernel"},
+    {AP_SSID, NCONFIG_DEFAULT_AP_SSID},
+    {AP_PASSWORD, NCONFIG_DEFAULT_AP_PASSWORD},
     {VIN_CURRENT_LIMIT, "4.0"},
     {MAIN_CURRENT_LIMIT, "3.0"},
     {USB_CURRENT_LIMIT, "3.0"},
@@ -81,8 +88,11 @@ esp_err_t init_nconfig()
 
     for (int i = 0; i < sizeof(default_values) / sizeof(default_values[0]); ++i)
     {
-        // check key is not exist or value is null
-        if (nconfig_value_is_not_set(default_values[i].type))
+        size_t len = 0;
+        bool missing = empty_is_set(default_values[i].type)
+            ? nconfig_get_str_len(default_values[i].type, &len) == ESP_ERR_NVS_NOT_FOUND
+            : nconfig_value_is_not_set(default_values[i].type);
+        if (missing)
         {
             if (nconfig_write(default_values[i].type, default_values[i].value) != ESP_OK)
                 // if nconfig write fail, system panic

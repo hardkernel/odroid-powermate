@@ -99,9 +99,9 @@ static esp_err_t diagnostics_get_handler(httpd_req_t* req)
     cJSON_AddNumberToObject(root, "wifi_last_connected_uptime_seconds",
                             wifi_diagnostics.last_connected_uptime_seconds);
 
-    char net_type[16] = "dhcp";
-    nconfig_read(NETIF_TYPE, net_type, sizeof(net_type));
-    cJSON_AddStringToObject(root, "wifi_net_type", net_type);
+    cJSON_AddStringToObject(root, "wifi_net_type", wifi_net_type_in_use());
+    if (wifi_static_ip_problem())
+        cJSON_AddStringToObject(root, "wifi_static_ip_error", wifi_static_ip_problem());
 
     wifi_ap_record_t ap_info;
     bool wifi_connected = wifi_get_current_ap_info(&ap_info) == ESP_OK;

@@ -135,13 +135,48 @@ esp_err_t wifi_get_dns_info(esp_netif_dns_type_t type, esp_netif_dns_info_t* dns
 esp_err_t wifi_use_dhcp(void);
 
 /**
- * @brief Configures the STA interface to use a static IP address.
+ * @brief Checks a static STA configuration before it is applied or saved.
+ *
+ * Every address is dotted decimal (four octets, no leading zeros); the netmask is
+ * contiguous, /8 to /30; the address and the gateway are distinct hosts of that subnet.
+ * A gateway or dns1 of 0.0.0.0 means none (a network without a router or DNS server);
+ * dns2 may also be NULL or empty for none.
+ * @param[out] reason The first problem found, when the configuration is refused (optional).
+ * @return true when the configuration can be used.
+ */
+bool wifi_static_config_valid(const char* ip, const char* gw, const char* netmask, const char* dns1,
+                              const char* dns2, const char** reason);
+
+/**
+ * @brief Why the saved static address is not in use since the last boot or mode switch
+ * (the device fell back to DHCP), or NULL.
+ */
+const char* wifi_static_ip_problem(void);
+
+/** @brief "static" or "dhcp": the STA addressing actually in use. */
+const char* wifi_net_type_in_use(void);
+
+/**
+ * @brief Checks the setup AP's SSID and password: SSID 1-32 bytes; password empty (open
+ * AP) or 8-63 printable ASCII characters (WPA2). Either may be NULL to leave it unchecked.
+ */
+bool wifi_ap_config_valid(const char* ssid, const char* password, const char** reason);
+
+/**
+ * @brief Checks the credentials of the network to join: SSID 1-32 bytes; password empty,
+ * up to 63 characters, or 64 hex digits (a raw PSK).
+ */
+bool wifi_sta_config_valid(const char* ssid, const char* password, const char** reason);
+
+/**
+ * @brief Configures the STA interface to use a static IP address. Does not save anything.
  * @param ip The static IP address.
  * @param gw The gateway address.
  * @param netmask The subnet mask.
  * @param dns1 The primary DNS server.
- * @param dns2 The secondary DNS server (optional).
- * @return ESP_OK on success, or an error code on failure.
+ * @param dns2 The secondary DNS server, or NULL or "" for none.
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if wifi_static_config_valid() refuses it,
+ *         or another error code on failure.
  */
 esp_err_t wifi_use_static(const char* ip, const char* gw, const char* netmask, const char* dns1, const char* dns2);
 
@@ -166,7 +201,8 @@ void sync_time();
  * @brief Sets the SSID and password for the STA mode, saves them to NVS, and connects to the AP.
  * @param ssid The SSID of the access point.
  * @param password The password of the access point.
- * @return ESP_OK on success, or an error code on failure.
+ * @return ESP_OK on success, ESP_ERR_INVALID_ARG if wifi_sta_config_valid() refuses them,
+ *         or another error code on failure.
  */
 esp_err_t wifi_sta_set_ap(const char* ssid, const char* password);
 

@@ -18,14 +18,56 @@
 
 static const char* TAG = "AP";
 
-#define DEFAULT_AP_SSID "powermate"
 #define AP_CHANNEL 1
 #define AP_MAX_CONN 4
 
+// What the Wi-Fi driver takes for a saved password: none (open), 8-63 bytes of any value,
+// or 64 hex digits. New passwords are held to printable ASCII (wifi_ap_config_valid());
+// one saved by an older firmware that the driver accepts keeps working.
+static bool driver_accepts_ap_password(const char* password)
+{
+    size_t len = strlen(password);
+    if (len == 64)
+    {
+        for (const char* p = password; *p; ++p)
+            if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f') || (*p >= 'A' && *p <= 'F')))
+                return false;
+        return true;
+    }
+    return len == 0 || (len >= 8 && len <= 63);
+}
+
+static esp_err_t set_ap_config(const char* ssid, const char* password)
+{
+    wifi_config_t wifi_config = {
+        .ap =
+            {
+                .channel = AP_CHANNEL,
+                .max_connection = AP_MAX_CONN,
+                .authmode = password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN,
+                .pmf_cfg =
+                    {
+                        .required = false,
+                    },
+            },
+    };
+    // Checked by the callers: at most 32 and 64 bytes; the fields need no NUL at full length.
+    memcpy(wifi_config.ap.ssid, ssid, strlen(ssid));
+    wifi_config.ap.ssid_len = strlen(ssid);
+    memcpy(wifi_config.ap.password, password, strlen(password));
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &wifi_config);
+    memset(&wifi_config, 0, sizeof(wifi_config));
+    return err;
+}
+
 /**
  * @brief Initializes and configures the AP mode.
+ *
+ * An empty saved password is an open AP. A saved SSID or password the Wi-Fi driver would
+ * refuse (left by an older firmware, or unreadable) falls back to the factory WPA2 setting
+ * instead of stopping the boot, and never to an open AP.
  */
-void wifi_init_ap(void)
+esp_err_t wifi_init_ap(void)
 {
     // Get the network interface handle for the AP
     esp_netif_t* p_netif_ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
@@ -44,45 +86,37 @@ void wifi_init_ap(void)
         esp_netif_dhcps_start(p_netif_ap); // Restart DHCP server
     }
 
-    // Configure Wi-Fi AP settings
-    wifi_config_t wifi_config = {
-        .ap =
-            {
-                .password = "",
-                .channel = AP_CHANNEL,
-                .max_connection = AP_MAX_CONN,
-                .authmode = WIFI_AUTH_WPA2_PSK,
-                .pmf_cfg =
-                    {
-                        .required = false,
-                    },
-            },
-    };
-
-    // Read SSID and password from NVS (nconfig)
-    size_t len;
-    if (nconfig_get_str_len(AP_SSID, &len) == ESP_OK && len > 1)
+    // One byte more than the config fields, for the NUL NVS stores.
+    char ssid[32 + 1] = "";
+    char password[64 + 1] = "";
+    if (nconfig_read(AP_SSID, ssid, sizeof(ssid)) != ESP_OK || ssid[0] == '\0')
+        strcpy(ssid, NCONFIG_DEFAULT_AP_SSID);
+    if (nconfig_read(AP_PASSWORD, password, sizeof(password)) != ESP_OK)
     {
-        nconfig_read(AP_SSID, (char*)wifi_config.ap.ssid, sizeof(wifi_config.ap.ssid));
+        ESP_LOGW(TAG, "Saved AP password unreadable; using the factory password");
+        strcpy(password, NCONFIG_DEFAULT_AP_PASSWORD);
     }
-    else
+    else if (!driver_accepts_ap_password(password))
     {
-        strcpy((char*)wifi_config.ap.ssid, DEFAULT_AP_SSID);
+        ESP_LOGW(TAG, "Saved AP password has %u bytes, which WPA2 refuses; using the factory password",
+                 (unsigned)strlen(password));
+        strcpy(password, NCONFIG_DEFAULT_AP_PASSWORD);
     }
 
-    if (nconfig_get_str_len(AP_PASSWORD, &len) == ESP_OK && len > 1)
+    bool open = password[0] == '\0';
+    esp_err_t err = set_ap_config(ssid, password);
+    memset(password, 0, sizeof(password));
+    if (err != ESP_OK)
     {
-        nconfig_read(AP_PASSWORD, (char*)wifi_config.ap.password, sizeof(wifi_config.ap.password));
+        ESP_LOGE(TAG, "Failed to set the AP config (%s); using the factory SSID and password", esp_err_to_name(err));
+        strcpy(ssid, NCONFIG_DEFAULT_AP_SSID);
+        open = false;
+        err = set_ap_config(NCONFIG_DEFAULT_AP_SSID, NCONFIG_DEFAULT_AP_PASSWORD);
+        if (err != ESP_OK)
+            ESP_LOGE(TAG, "Failed to set the factory AP config: %s", esp_err_to_name(err));
     }
 
-    // If password is not set, use open authentication
-    if (strlen((char*)wifi_config.ap.password) == 0)
-    {
-        wifi_config.ap.authmode = WIFI_AUTH_OPEN;
-    }
-
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &wifi_config));
-
-    ESP_LOGI(TAG, "wifi_init_ap finished. SSID: %s, Password: %s, Channel: %d", (char*)wifi_config.ap.ssid, "********",
-             AP_CHANNEL);
+    if (err == ESP_OK)
+        ESP_LOGI(TAG, "wifi_init_ap finished. SSID: %s, %s, Channel: %d", ssid, open ? "open" : "WPA2", AP_CHANNEL);
+    return err;
 }

@@ -15,7 +15,7 @@
 #include "esp_err.h"
 
 void wifi_init_sta(void);
-void wifi_init_ap(void);
+esp_err_t wifi_init_ap(void);
 void initialize_sntp(void);
 void wifi_set_auto_reconnect(bool enable);
 bool wifi_get_auto_reconnect(void);

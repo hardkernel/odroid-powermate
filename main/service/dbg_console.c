@@ -77,10 +77,9 @@ static int wifi_connect_handler(int argc, char** argv)
     }
 
     const char* ssid = wifi_connect_args.ssid->sval[0];
-    char password[64] = "";
-
-    if (wifi_connect_args.password->count != 0)
-        strncpy(password, wifi_connect_args.password->sval[0], sizeof(password));
+    // Passed as given: wifi_sta_set_ap() checks the lengths (a copy into a fixed buffer lost
+    // the NUL of a 64-character PSK).
+    const char* password = wifi_connect_args.password->count != 0 ? wifi_connect_args.password->sval[0] : "";
 
     printf("Attempting to connect to SSID: %s\n", ssid);
 
@@ -89,6 +88,10 @@ static int wifi_connect_handler(int argc, char** argv)
     if (err == ESP_OK)
     {
         printf("Wi-Fi credentials set. The device will attempt to connect.\n");
+    }
+    else if (err == ESP_ERR_INVALID_ARG)
+    {
+        printf("Refused: the SSID must be 1-32 bytes and the password at most 63 characters or 64 hex digits.\n");
     }
     else
     {

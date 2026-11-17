@@ -17,6 +17,9 @@
 #define NCONFIG_NVS_NAMESPACE "er" ///< The NVS namespace where all configurations are stored.
 #define NCONFIG_NOT_FOUND ESP_ERR_NVS_NOT_FOUND ///< Alias for the NVS not found error code.
 
+#define NCONFIG_DEFAULT_AP_SSID "powermate"      ///< Setup AP name after a factory reset.
+#define NCONFIG_DEFAULT_AP_PASSWORD "hardkernel" ///< Setup AP WPA2 password after a factory reset.
+
 /**
  * @brief Initializes the nconfig module.
  *
