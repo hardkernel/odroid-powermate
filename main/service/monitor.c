@@ -813,7 +813,9 @@ void init_status_monitor()
 
     xTaskCreate(shutdown_load_sw_task, "shutdown_sw_task", configMINIMAL_STACK_SIZE * 3, NULL, 15,
                 &shutdown_task_handle);
-    xTaskCreate(warning_alert_task, "warning_alert_task", configMINIMAL_STACK_SIZE * 3, NULL, 10,
+    // Above httpd (12): over HTTPS a handshake keeps httpd busy for ~0.7 s, and the
+    // warning cut-off must not wait for it.
+    xTaskCreate(warning_alert_task, "warning_alert_task", configMINIMAL_STACK_SIZE * 3, NULL, 14,
                 &warning_task_handle);
     if ((critical_cutoff_pending || gpio_get_level(PM_INT_CRITICAL) == 0) && shutdown_task_handle != NULL)
     {
