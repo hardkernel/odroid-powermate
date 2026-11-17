@@ -25,9 +25,10 @@
 #define CONFIG_MODE_CONTINUOUS 0x7 // Shunt and bus, continuous
 
 // Mask/Enable register. Reading it clears the latched alert flags and CVRF.
+// D11 is WEN and D10 is CEN (SBOS576, Mask/Enable register), right above CF1-3 in D9-D7.
 #define MASK_CVRF (1u << 0)
-#define MASK_WEN (1u << 10)
-#define MASK_CEN (1u << 11)
+#define MASK_CEN (1u << 10)
+#define MASK_WEN (1u << 11)
 #define MASK_WF(mask) (((mask) >> 3) & 0x7) // Bit 2 = CH1 ... bit 0 = CH3, as INA3221_FLAG_BIT
 #define MASK_CF(mask) (((mask) >> 7) & 0x7)
 
