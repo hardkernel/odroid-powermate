@@ -8,6 +8,7 @@
  * functions in other modules (UI, API, etc.).
  */
 
+import {initTlsSettings} from './tls.js';
 import * as dom from './dom.js';
 import * as api from './api.js';
 import {getAuthHeaders, handleResponse} from './api.js'; // Import auth functions
@@ -463,6 +464,7 @@ export function setupEventListeners() {
     dom.settingsModal.addEventListener('show.bs.modal', () => {
         // Load settings when the modal is about to be shown
         loadCurrentLimitSettings();
+        initTlsSettings();
     });
 
     const blurActiveElement = () => {

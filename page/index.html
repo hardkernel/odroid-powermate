@@ -285,6 +285,11 @@
                                 data-bs-target="#device-settings-pane" type="button" role="tab">Device
                         </button>
                     </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="tls-settings-tab" data-bs-toggle="tab"
+                                data-bs-target="#tls-settings-pane" type="button" role="tab">TLS
+                        </button>
+                    </li>
                 </ul>
                 <div class="tab-content pt-3" id="settingsTabContent">
                     <div class="tab-pane fade show active" id="wifi-settings-pane" role="tabpanel">
@@ -517,6 +522,63 @@
                             <label class="form-label">System Reboot</label>
                             <p class="text-muted small">This will restart the device. The reboot will occur after 3 seconds.</p>
                             <button type="button" class="btn btn-danger" id="reboot-button">Reboot Now</button>
+                        </div>
+                        <div class="d-flex justify-content-end pt-3 border-top mt-3">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                    </div>
+                    <div class="tab-pane fade" id="tls-settings-pane" role="tabpanel">
+                        <div class="mb-3" id="tls-settings">
+                            <div class="form-check form-switch d-flex align-items-center justify-content-between ps-0">
+                                <label class="form-check-label" for="https-toggle">Serve the Web UI over HTTPS</label>
+                                <input class="form-check-input float-none ms-2" id="https-toggle" role="switch" type="checkbox">
+                            </div>
+                            <p class="text-muted small mb-2">
+                                The device reboots into the new mode. Over HTTPS it serves 6 connections instead of 10,
+                                and the first connection takes about a second. The Claude plugin, pmtui and the logger follow the switch and accept this certificate; pin its SHA-256 in them to refuse any other.
+                            </p>
+                            <div class="d-flex justify-content-end">
+                                <button class="btn btn-primary btn-sm" id="https-apply-button" type="button">Apply</button>
+                            </div>
+                            <hr>
+                            <label class="form-label">Certificate <span class="badge text-bg-secondary" id="tls-cert-source">-</span></label>
+                            <dl class="row small mb-2" id="tls-cert-info">
+                                <dt class="col-4">Subject</dt><dd class="col-8 text-break" id="tls-cert-subject">-</dd>
+                                <dt class="col-4">Issuer</dt><dd class="col-8 text-break" id="tls-cert-issuer">-</dd>
+                                <dt class="col-4">Names</dt><dd class="col-8 text-break" id="tls-cert-names">-</dd>
+                                <dt class="col-4">Valid</dt><dd class="col-8" id="tls-cert-valid">-</dd>
+                                <dt class="col-4">Key</dt><dd class="col-8" id="tls-cert-key">-</dd>
+                                <dt class="col-4">SHA-256</dt><dd class="col-8 text-break font-monospace" id="tls-cert-fingerprint">-</dd>
+                            </dl>
+                            <p class="text-muted small mb-2" id="tls-cert-note"></p>
+                            <div class="d-flex justify-content-end mb-3">
+                                <button class="btn btn-outline-secondary btn-sm" id="tls-generate-button" type="button">
+                                    Create New Self-Signed Certificate
+                                </button>
+                            </div>
+                            <label class="form-label" for="tls-cert-input">Install Your Own Certificate</label>
+                            <p class="text-muted small mb-2">
+                                PEM files: the certificate (followed by any intermediate certificates) and its
+                                unencrypted private key, EC P-256 (recommended) or RSA-2048.
+                                <span class="text-warning-emphasis" id="tls-plain-http-warning">Over plain HTTP the key is sent unencrypted;
+                                upload it over HTTPS or on a trusted network.</span>
+                            </p>
+                            <input class="form-control form-control-sm mb-1" id="tls-cert-file" type="file" accept=".pem,.crt,.cer">
+                            <textarea class="form-control form-control-sm font-monospace mb-2" id="tls-cert-input" rows="3"
+                                      placeholder="-----BEGIN CERTIFICATE-----"></textarea>
+                            <input class="form-control form-control-sm mb-1" id="tls-key-file" type="file" accept=".pem,.key">
+                            <textarea class="form-control form-control-sm font-monospace mb-2" id="tls-key-input" rows="3"
+                                      placeholder="-----BEGIN PRIVATE KEY-----" autocomplete="off"></textarea>
+                            <div class="d-flex justify-content-end mb-2">
+                                <button class="btn btn-primary btn-sm" id="tls-upload-button" type="button">Install Certificate</button>
+                            </div>
+                            <details class="small">
+                                <summary>Make a certificate with OpenSSL</summary>
+                                <p class="mt-2 mb-1">Self-signed, for this device:</p>
+                                <pre class="bg-body-tertiary p-2 rounded small" id="tls-openssl-self" style="white-space: pre-wrap; overflow-wrap: anywhere"></pre>
+                                <p class="mb-1">Signed by your own CA (install <code>ca.crt</code> in the browsers once):</p>
+                                <pre class="bg-body-tertiary p-2 rounded small" id="tls-openssl-ca" style="white-space: pre-wrap; overflow-wrap: anywhere"></pre>
+                            </details>
                         </div>
                         <div class="d-flex justify-content-end pt-3 border-top mt-3">
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
