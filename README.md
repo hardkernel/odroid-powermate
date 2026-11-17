@@ -81,6 +81,59 @@ sudo apt install nodejs npm nanopb
 3.  Open a web browser and navigate to the device's IP address.
 4.  You should now see the ODROID Remote control panel.
 
+### HTTPS (optional)
+
+The web UI is served over HTTP by default. To serve it over HTTPS, open **Settings > TLS**,
+turn on **Serve the Web UI over HTTPS** and press **Apply**: the device reboots and answers at
+`https://odroid-pm-xxxx.local/` (port 443). Requests to `http://` (port 80) are redirected to
+`https://`. With HTTPS off, port 443 stays closed, so browsers that try HTTPS first fall back
+to `http://`.
+
+- On first boot the device creates a self-signed EC P-256 certificate for
+  `odroid-pm-xxxx.local`, the setup AP address `192.168.4.1` and, when one is set, its static IP.
+  Browsers warn about it once; compare the SHA-256 fingerprint the browser shows with the one in
+  **Settings > TLS** before you accept it.
+- **Create New Self-Signed Certificate** replaces it. **Install Your Own Certificate** takes a PEM
+  certificate (optionally followed by intermediates) and its unencrypted EC P-256 or RSA-2048 key.
+  EC is recommended: a new TLS connection takes ~0.7 s with EC and ~1.3 s with RSA on the ESP32-C3.
+  A new certificate is served after the next reboot. Over plain HTTP the key is sent unencrypted,
+  so upload it over HTTPS or on a trusted network.
+- The certificate is kept in its own `tls` partition after the app, so firmware updates (including
+  the merged `powermate-*.bin` image, which erases the settings) keep it. Erasing the whole flash
+  removes it, and a new self-signed one is created.
+- Over HTTPS the device serves 6 connections (10 over HTTP), TLS 1.2 only. If the certificate
+  cannot be loaded the device falls back to HTTP; the TLS tab then says HTTPS did not start,
+  and the USB debug log says why.
+- If the web UI cannot be reached at all after changing HTTPS settings, holding the button for
+  5 seconds resets all settings, HTTPS included (Wi-Fi too); the certificate is kept.
+- The Claude plugin, pmtui and the logger follow the switch on their own (they ask the device without
+  credentials whether it serves HTTPS) and accept the device's certificate as it is. Each can pin its
+  SHA-256 fingerprint from Settings > TLS to refuse any other certificate; see their READMEs.
+- Copying from the terminal (select, then Ctrl+C) uses the browser clipboard, which browsers only
+  fully allow over HTTPS.
+
+Making a certificate with OpenSSL (the Device tab shows these with the device's own names):
+
+```bash
+# Self-signed
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout powermate.key -out powermate.crt -days 3650 \
+  -subj "/CN=odroid-pm-xxxx" \
+  -addext "subjectAltName=DNS:odroid-pm-xxxx.local,IP:192.168.1.50"
+
+# Or signed by your own CA, so browsers that trust ca.crt do not warn
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout ca.key -out ca.crt -days 3650 -subj "/CN=PowerMate Local CA"
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout powermate.key -out powermate.csr -subj "/CN=odroid-pm-xxxx"
+printf "subjectAltName=DNS:odroid-pm-xxxx.local,IP:192.168.1.50\nextendedKeyUsage=serverAuth\n" > powermate.ext
+openssl x509 -req -in powermate.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+  -days 825 -extfile powermate.ext -out powermate.crt
+```
+
+Upgrading a checkout: the HTTPS options live in `sdkconfig.defaults`, which an existing `sdkconfig`
+does not pick up. The build stops with "delete sdkconfig and rebuild" until you do.
+
 ## Examples
 
 - [Power data logger](example/logger): Python script for logging data and plot
