@@ -114,32 +114,36 @@ static uint16_t take_pending_flags(volatile uint16_t* flags)
  * the status first and takes the pending flags after, and never sees a cleared source.
  * The warning flags are not latched here, but the sampler still forwards the ones it sees
  * newly set (see sampler_task), so a read there can never hide a warning from its task.
+ *
+ * Clearing the latch also releases the alert pin. A read that lands between the alert and
+ * the interrupt handler's pin check leaves the handler seeing a high pin, so it would not
+ * cut. Any read outside the shutdown task that finds a critical flag therefore cuts the
+ * outputs itself. Before the shutdown task exists (boot), flags are only parked.
  */
 static esp_err_t ina3221_get_status(ina3221_status_t* status)
 {
     xSemaphoreTake(status_lock, portMAX_DELAY);
     esp_err_t err = ina3221_read_status(status);
-    if (err == ESP_OK)
+    if (err == ESP_OK && status->critical)
+    {
         add_pending_flags(&pending_critical_flags, status->critical);
+        if (shutdown_task_handle != NULL && xTaskGetCurrentTaskHandle() != shutdown_task_handle)
+        {
+            gpio_set_level(PM_EXPANDER_RST, 0);
+            xTaskNotifyGive(shutdown_task_handle);
+        }
+    }
     xSemaphoreGive(status_lock);
     return err;
 }
 
-static void notify_alert_tasks(uint16_t cf, uint16_t wf)
+static void notify_warning_task(uint16_t wf)
 {
-    if (cf)
-    {
-        add_pending_flags(&pending_critical_flags, cf);
-        if (shutdown_task_handle != NULL)
-            xTaskNotifyGive(shutdown_task_handle);
-    }
-
-    if (wf)
-    {
-        add_pending_flags(&pending_warning_flags, wf);
-        if (warning_task_handle != NULL)
-            xTaskNotifyGive(warning_task_handle);
-    }
+    if (!wf)
+        return;
+    add_pending_flags(&pending_warning_flags, wf);
+    if (warning_task_handle != NULL)
+        xTaskNotifyGive(warning_task_handle);
 }
 
 static esp_err_t climit_get_channel_reg(uint8_t channel, ina3221_limit_t limit, float* limit_a, uint16_t* raw)
@@ -379,7 +383,7 @@ static esp_err_t sampler_get_status(ina3221_status_t* status, uint16_t* last_wf)
     uint16_t new_wf = wf & ~*last_wf;
     *last_wf = wf;
     if (new_wf)
-        notify_alert_tasks(0, new_wf);
+        notify_warning_task(new_wf);
     return ESP_OK;
 }
 
@@ -555,17 +559,26 @@ static void shutdown_load_sw_task(void* pvParameters)
         // After the status read: it parks the latched flags, and so does every earlier read.
         uint16_t cf = take_pending_flags(&pending_critical_flags);
         bool button_pressed = false;
+        bool repeat = false;
 
         if (status_err == ESP_OK)
         {
             cf |= status.critical; // BIT2=IN1/USB, BIT1=IN2/MAIN, BIT0=IN3/VIN
-            notify_alert_tasks(0, status.warning);
+            notify_warning_task(status.warning);
             if (cf)
                 push_critical_fault_sources(cf);
-            else
+            else if (gpio_get_level(PM_INT_CRITICAL) == 0)
             {
+                // No channel flag and the line is still held low: the button.
                 push_eventf(EV_CRITICAL, "critical cutoff source: BTN");
                 button_pressed = true;
+            }
+            else
+            {
+                // A second notification for a cut-off already handled (the interrupt and a
+                // status read both caught the same alert). The outputs are already off.
+                ESP_LOGI(TAG, "critical notification without a new source");
+                repeat = true;
             }
         }
         else
@@ -585,7 +598,8 @@ static void shutdown_load_sw_task(void* pvParameters)
         if (persist_err != ESP_OK)
             ESP_LOGW(TAG, "failed to save disabled load switch state: %s", esp_err_to_name(persist_err));
 
-        push_eventf(EV_CRITICAL, "load switch disabled");
+        if (!repeat)
+            push_eventf(EV_CRITICAL, "load switch disabled");
 
         // Only a held button press can trigger the configuration reset.
         if (button_pressed && gpio_get_level(PM_INT_CRITICAL) == 0)
@@ -612,8 +626,7 @@ static void warning_alert_task(void* pvParameters)
 
         if (status_err == ESP_OK)
         {
-            wf |= status.warning;
-            notify_alert_tasks(status.critical, 0);
+            wf |= status.warning; // A critical flag here was handed over by the status read.
             if (wf)
             {
                 push_warning_fault_details(wf);
