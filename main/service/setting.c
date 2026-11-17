@@ -206,14 +206,11 @@ static esp_err_t setting_get_handler(httpd_req_t* req)
         cJSON_AddStringToObject(root, "mode", "sta"); // Default to sta
     }
 
-    if (nconfig_read(NETIF_TYPE, buf, sizeof(buf)) == ESP_OK)
-    {
-        cJSON_AddStringToObject(root, "net_type", buf);
-    }
-    else
-    {
-        cJSON_AddStringToObject(root, "net_type", "dhcp"); // Default to dhcp
-    }
+    // The type in use: a saved static address the boot could not apply is reported as
+    // DHCP, with the reason.
+    cJSON_AddStringToObject(root, "net_type", wifi_net_type_in_use());
+    if (wifi_static_ip_problem())
+        cJSON_AddStringToObject(root, "static_ip_error", wifi_static_ip_problem());
 
     if (nconfig_read(UART_BAUD_RATE, buf, sizeof(buf)) == ESP_OK)
     {
@@ -285,7 +282,8 @@ static esp_err_t setting_get_handler(httpd_req_t* req)
             esp_ip4addr_ntoa(&dns_info.ip.u_addr.ip4, dns_str, sizeof(dns_str));
             cJSON_AddStringToObject(ip_obj, "dns1", dns_str);
         }
-        if (wifi_get_dns_info(ESP_NETIF_DNS_BACKUP, &dns_info) == ESP_OK)
+        // 0.0.0.0 is no backup server.
+        if (wifi_get_dns_info(ESP_NETIF_DNS_BACKUP, &dns_info) == ESP_OK && dns_info.ip.u_addr.ip4.addr != 0)
         {
             esp_ip4addr_ntoa(&dns_info.ip.u_addr.ip4, dns_str, sizeof(dns_str));
             cJSON_AddStringToObject(ip_obj, "dns2", dns_str);
@@ -342,6 +340,80 @@ static esp_err_t wifi_scan(httpd_req_t* req)
     return ESP_OK;
 }
 
+#define SETTING_MAX_BODY 1024
+#define STR_(x) #x
+#define STR(x) STR_(x)
+
+static const char* optional_string(cJSON* root, const char* key, bool* bad)
+{
+    cJSON* item = cJSON_GetObjectItem(root, key);
+    if (!item || cJSON_IsNull(item))
+        return NULL;
+    if (!cJSON_IsString(item))
+    {
+        *bad = true;
+        return NULL;
+    }
+    return item->valuestring;
+}
+
+/**
+ * Checks the Wi-Fi, address and login parts of a request before anything is saved, so a
+ * refused value changes nothing. A value the Wi-Fi driver would refuse at boot (such as a
+ * 1-7 character AP password) would otherwise abort every boot.
+ */
+static const char* check_setting_request(cJSON* root)
+{
+    const char* reason = NULL;
+    bool bad = false;
+
+    cJSON* mode = cJSON_GetObjectItem(root, "mode");
+    if (cJSON_IsString(mode) && strcmp(mode->valuestring, "apsta") == 0)
+    {
+        const char* ap_ssid = optional_string(root, "ap_ssid", &bad);
+        const char* ap_password = optional_string(root, "ap_password", &bad);
+        if (bad)
+            return "ap_ssid and ap_password must be strings";
+        if (!wifi_ap_config_valid(ap_ssid, ap_password, &reason))
+            return reason;
+    }
+
+    cJSON* net_type = cJSON_GetObjectItem(root, "net_type");
+    if (cJSON_IsString(net_type) && strcmp(net_type->valuestring, "static") == 0)
+    {
+        const char* ip = optional_string(root, "ip", &bad);
+        const char* gw = optional_string(root, "gateway", &bad);
+        const char* sn = optional_string(root, "subnet", &bad);
+        const char* d1 = optional_string(root, "dns1", &bad);
+        const char* d2 = optional_string(root, "dns2", &bad);
+        if (bad || !ip || !gw || !sn || !d1)
+            return "static needs ip, gateway, subnet and dns1 (and optionally dns2) as strings";
+        if (!wifi_static_config_valid(ip, gw, sn, d1, d2, &reason))
+            return reason;
+    }
+
+    cJSON* ssid = cJSON_GetObjectItem(root, "ssid");
+    if (cJSON_IsString(ssid))
+    {
+        cJSON* password = cJSON_GetObjectItem(root, "password");
+        if (cJSON_IsString(password) && !wifi_sta_config_valid(ssid->valuestring, password->valuestring, &reason))
+            return reason;
+    }
+
+    cJSON* new_username = cJSON_GetObjectItem(root, "new_username");
+    cJSON* new_password = cJSON_GetObjectItem(root, "new_password");
+    if (cJSON_IsString(new_username) && cJSON_IsString(new_password))
+    {
+        size_t user_len = strlen(new_username->valuestring);
+        size_t pass_len = strlen(new_password->valuestring);
+        if (user_len == 0 || user_len > WEB_USERNAME_MAX_LEN)
+            return "new_username must be 1 to " STR(WEB_USERNAME_MAX_LEN) " bytes";
+        if (pass_len == 0 || pass_len > WEB_PASSWORD_MAX_LEN)
+            return "new_password must be 1 to " STR(WEB_PASSWORD_MAX_LEN) " bytes";
+    }
+    return NULL;
+}
+
 static esp_err_t setting_post_handler(httpd_req_t* req)
 {
     esp_err_t err = api_auth_check(req);
@@ -350,21 +422,23 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
         return err;
     }
 
-    char buf[1024];
-    int received = httpd_req_recv(req, buf, sizeof(buf) - 1);
-
-    if (received <= 0)
-    {
-        if (received == HTTPD_SOCK_ERR_TIMEOUT)
-            httpd_resp_send_408(req);
+    char* body = webserver_read_body(req, SETTING_MAX_BODY);
+    if (!body)
         return ESP_FAIL;
-    }
-    buf[received] = '\0';
-
-    cJSON* root = cJSON_Parse(buf);
+    cJSON* root = cJSON_Parse(body);
+    webserver_free_body(body); // may hold passwords
     if (root == NULL)
     {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
+        return ESP_FAIL;
+    }
+
+    const char* refused = check_setting_request(root);
+    if (refused)
+    {
+        ESP_LOGW(TAG, "Setting request refused: %s", refused);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, refused);
+        cJSON_Delete(root);
         return ESP_FAIL;
     }
 
@@ -394,27 +468,24 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
 
         if (strcmp(mode, "sta") == 0 || strcmp(mode, "apsta") == 0)
         {
+            err = ESP_OK;
             if (strcmp(mode, "apsta") == 0)
             {
                 cJSON* ap_ssid_item = cJSON_GetObjectItem(root, "ap_ssid");
                 cJSON* ap_pass_item = cJSON_GetObjectItem(root, "ap_password");
 
-                if (ap_ssid_item && cJSON_IsString(ap_ssid_item))
-                {
-                    nconfig_write(AP_SSID, ap_ssid_item->valuestring);
-                }
-
-                if (ap_pass_item && cJSON_IsString(ap_pass_item))
-                {
-                    nconfig_write(AP_PASSWORD, ap_pass_item->valuestring);
-                }
-                else
-                {
-                    nconfig_delete(AP_PASSWORD);
-                }
+                if (cJSON_IsString(ap_ssid_item))
+                    err = nconfig_write(AP_SSID, ap_ssid_item->valuestring);
+                // No password is an open AP. Stored as "", which survives a reboot: a
+                // missing key gets the factory password back.
+                if (err == ESP_OK)
+                    err = nconfig_write(AP_PASSWORD, cJSON_IsString(ap_pass_item) ? ap_pass_item->valuestring : "");
+                if (err != ESP_OK)
+                    ESP_LOGE(TAG, "Failed to save the AP settings: %s", esp_err_to_name(err));
             }
 
-            err = wifi_switch_mode(mode);
+            if (err == ESP_OK)
+                err = wifi_switch_mode(mode);
             if (err == ESP_OK)
             {
                 cJSON_AddStringToObject(resp_root, "mode_status", "initiated");
@@ -449,20 +520,35 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
             const char* d1 = cJSON_IsString(d1_item) ? d1_item->valuestring : NULL;
             const char* d2 = cJSON_IsString(d2_item) ? d2_item->valuestring : NULL;
 
-            if (ip && gw && sn && d1)
+            if (ip && gw && sn && d1) // checked by check_setting_request()
             {
-                nconfig_write(NETIF_TYPE, "static");
-                nconfig_write(NETIF_IP, ip);
-                nconfig_write(NETIF_GATEWAY, gw);
-                nconfig_write(NETIF_SUBNET, sn);
-                nconfig_write(NETIF_DNS1, d1);
-                if (d2)
-                    nconfig_write(NETIF_DNS2, d2);
-                else
-                    nconfig_delete(NETIF_DNS2);
+                // Applied first, so a setting the network stack refuses is never saved.
+                // NETIF_TYPE goes last: an interrupted save keeps the previous mode.
+                err = wifi_use_static(ip, gw, sn, d1, d2);
+                if (err == ESP_OK)
+                    err = nconfig_write(NETIF_IP, ip);
+                if (err == ESP_OK)
+                    err = nconfig_write(NETIF_GATEWAY, gw);
+                if (err == ESP_OK)
+                    err = nconfig_write(NETIF_SUBNET, sn);
+                if (err == ESP_OK)
+                    err = nconfig_write(NETIF_DNS1, d1);
+                if (err == ESP_OK)
+                    err = nconfig_write(NETIF_DNS2, d2 ? d2 : ""); // "": no backup DNS
+                if (err == ESP_OK)
+                    err = nconfig_write(NETIF_TYPE, "static");
 
-                wifi_use_static(ip, gw, sn, d1, d2);
-                cJSON_AddStringToObject(resp_root, "net_status", "static_applied");
+                if (err == ESP_OK)
+                {
+                    cJSON_AddStringToObject(resp_root, "net_status", "static_applied");
+                }
+                else
+                {
+                    ESP_LOGE(TAG, "Failed to apply the static IP: %s", esp_err_to_name(err));
+                    cJSON_AddStringToObject(resp_root, "net_status", "error");
+                    cJSON_AddStringToObject(resp_root, "message", esp_err_to_name(err));
+                    cJSON_AddStringToObject(resp_root, "status", "error");
+                }
                 action_taken = true;
             }
         }
@@ -632,10 +718,22 @@ static esp_err_t setting_post_handler(httpd_req_t* req)
         const char* new_username = new_username_item->valuestring;
         const char* new_password = new_password_item->valuestring;
 
-        nconfig_write(PAGE_USERNAME, new_username);
-        nconfig_write(PAGE_PASSWORD, new_password);
-        ESP_LOGI(TAG, "Username and password updated successfully.");
-        cJSON_AddStringToObject(resp_root, "auth_status", "updated");
+        // Lengths checked by check_setting_request(), so /login can read them back.
+        err = nconfig_write(PAGE_PASSWORD, new_password);
+        if (err == ESP_OK)
+            err = nconfig_write(PAGE_USERNAME, new_username);
+        if (err == ESP_OK)
+        {
+            ESP_LOGI(TAG, "Username and password updated successfully.");
+            cJSON_AddStringToObject(resp_root, "auth_status", "updated");
+        }
+        else
+        {
+            ESP_LOGE(TAG, "Failed to save the login: %s", esp_err_to_name(err));
+            cJSON_AddStringToObject(resp_root, "auth_status", "error");
+            cJSON_AddStringToObject(resp_root, "message", esp_err_to_name(err));
+            cJSON_AddStringToObject(resp_root, "status", "error");
+        }
         action_taken = true;
     }
 
