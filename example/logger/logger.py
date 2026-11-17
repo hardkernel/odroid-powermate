@@ -4,7 +4,13 @@
 import argparse
 import asyncio
 import csv
-import requests
+import hashlib
+import http.client
+import json
+import ssl
+import urllib.error
+import urllib.request
+from urllib.parse import urlsplit
 import websockets
 import websockets.asyncio
 import websockets.asyncio.client
@@ -16,6 +22,17 @@ from datetime import datetime, timezone
 import status_pb2
 
 
+def normalize_fingerprint(text):
+    value = text.replace(":", "").replace(" ", "").lower()
+    if len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+        raise SystemExit("--fingerprint: a SHA-256 fingerprint is 64 hex digits (colons optional)")
+    return value
+
+
+def format_fingerprint(value):
+    return ":".join(value[i:i + 2] for i in range(0, len(value), 2)).upper()
+
+
 class OdroidPowerLogger:
     """
     A class to connect to the Odroid Smart Power monitoring server and log power data.
@@ -24,33 +41,95 @@ class OdroidPowerLogger:
     3. Receives and decodes binary data in Protobuf format, then prints it.
     """
 
-    def __init__(self, host, username, password, output_file=None):
-        self.host = host
+    def __init__(self, host, username, password, output_file=None, fingerprint=None):
         self.username = username
         self.password = password
-        self.base_url = f"http://{self.host}"
-        self.ws_url = f"ws://{self.host}/ws"
         self.output_file = output_file
+        self.fingerprint = normalize_fingerprint(fingerprint) if fingerprint else None
         self.token = None
+        self.ssl_context = None
+
+        parts = urlsplit(host if "://" in host else f"http://{host}")
+        self.scheme, self.netloc = parts.scheme, parts.netloc
+        if self.scheme not in ("http", "https"):
+            raise SystemExit(f"Unsupported URL scheme: {self.scheme}")
+
+    @property
+    def base_url(self):
+        return f"{self.scheme}://{self.netloc}"
+
+    @property
+    def ws_url(self):
+        return f"{'wss' if self.scheme == 'https' else 'ws'}://{self.netloc}/ws"
+
+    def resolve_scheme(self):
+        """Finds out whether the PowerMate serves HTTP or HTTPS, without credentials.
+
+        With HTTPS on, its port 80 answers every GET with a redirect to https:// on the
+        same host. Only that redirect is followed, so the password never goes out in clear.
+        """
+        if self.scheme == "https":
+            return
+        connection = http.client.HTTPConnection(self.netloc, timeout=5)
+        try:
+            connection.request("GET", "/api/version")
+            response = connection.getresponse()
+            response.read()
+            if 300 <= response.status < 400:
+                location = urlsplit(response.getheader("Location", ""))
+                if location.scheme != "https" or location.hostname != urlsplit(self.base_url).hostname:
+                    raise SystemExit(f"The device redirects to {location.geturl()}; only https:// on the same host is followed.")
+                self.scheme, self.netloc = "https", location.netloc
+                print(f"The PowerMate serves HTTPS: using {self.base_url}")
+        finally:
+            connection.close()
+
+    def make_ssl_context(self):
+        """Accepts the PowerMate's certificate as it is, or only the pinned one."""
+        if self.scheme != "https":
+            return None
+        if not self.fingerprint:
+            # Usually self-signed: encrypted, but which device answers is not checked.
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            return context
+        parts = urlsplit(self.base_url)
+        pem = ssl.get_server_certificate((parts.hostname, parts.port or 443))
+        actual = hashlib.sha256(ssl.PEM_cert_to_DER_cert(pem)).hexdigest()
+        if actual != self.fingerprint:
+            raise SystemExit(f"The certificate of {parts.hostname} does not match --fingerprint.\n"
+                             f"  presented: {format_fingerprint(actual)}\n  expected:  {format_fingerprint(self.fingerprint)}")
+        # Trust exactly this certificate: a different one fails the TLS handshake itself,
+        # before the token (sent in the WebSocket URL) or the password leaves this computer.
+        context = ssl.create_default_context(cadata=pem)
+        context.check_hostname = False
+        context.verify_flags |= ssl.VERIFY_X509_PARTIAL_CHAIN
+        return context
 
     def login(self):
         """Logs into the server to retrieve an authentication token."""
+        try:
+            self.resolve_scheme()
+            self.ssl_context = self.make_ssl_context()
+        except OSError as e:
+            print(f"Error connecting to {self.base_url}: {e}")
+            return False
         login_url = f"{self.base_url}/login"
-        payload = {"username": self.username, "password": self.password}
+        payload = json.dumps({"username": self.username, "password": self.password}).encode()
+        request = urllib.request.Request(login_url, data=payload, method="POST",
+                                         headers={"Content-Type": "application/json"})
         try:
             print(f"Attempting to log in to '{login_url}'...")
-            response = requests.post(login_url, json=payload, timeout=5)
-            response.raise_for_status()
-
-            response_json = response.json()
+            with urllib.request.urlopen(request, timeout=10, context=self.ssl_context) as response:
+                response_json = json.load(response)
             if "token" in response_json:
                 self.token = response_json["token"]
                 print("Login successful! Token received.")
                 return True
-            else:
-                print("Login failed: No token in response.")
-                return False
-        except requests.exceptions.RequestException as e:
+            print("Login failed: No token in response.")
+            return False
+        except urllib.error.URLError as e:
             print(f"Error during login: {e}")
             return False
 
@@ -90,8 +169,8 @@ class OdroidPowerLogger:
                     csv_writer = None
             # --- End CSV File Handling ---
 
-            async with websockets.connect(uri) as websocket:
-                print(f"Connected to WebSocket: {uri}")
+            async with websockets.connect(uri, ssl=self.ssl_context) as websocket:
+                print(f"Connected to WebSocket: {self.ws_url}")
                 while True:
                     # Receive binary message from the server
                     message_bytes = await websocket.recv()
@@ -142,13 +221,17 @@ class OdroidPowerLogger:
 
 async def main():
     parser = argparse.ArgumentParser(description="Odroid Smart Power Data Logger")
-    parser.add_argument("host", help="Server's host address or IP (e.g., 192.168.1.10)")
+    parser.add_argument("host", help="PowerMate address or IP (e.g., 192.168.1.10); http:// or https:// optional")
     parser.add_argument("-u", "--username", required=True, help="Login username")
     parser.add_argument("-p", "--password", required=True, help="Login password")
     parser.add_argument("-o", "--output", help="Path to the output CSV file.")
+    parser.add_argument("--fingerprint",
+                        help="pin the PowerMate's HTTPS certificate: its SHA-256 fingerprint "
+                             "(Settings > TLS in its web UI), colons optional; any other is refused")
     args = parser.parse_args()
 
-    logger = OdroidPowerLogger(host=args.host, username=args.username, password=args.password, output_file=args.output)
+    logger = OdroidPowerLogger(host=args.host, username=args.username, password=args.password,
+                               output_file=args.output, fingerprint=args.fingerprint)
     await logger.run()
 
 

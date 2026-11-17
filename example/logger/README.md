@@ -42,7 +42,7 @@ Ensure you have Python 3 installed.
 With the virtual environment activated, install the necessary Python packages:
 
 ```bash
-pip3 install requests websockets protobuf pandas matplotlib python-dateutil scipy
+pip3 install websockets protobuf pandas matplotlib python-dateutil scipy
 ```
 
 ### 4. Protobuf Generated File
@@ -93,6 +93,17 @@ This command will log in and save the power data to `power_log.csv`.
 ```bash
 python3 logger.py 192.168.1.50 -u admin -p mypassword -o power_log.csv
 ```
+
+With HTTPS on (Settings > TLS), the logger notices it by itself and connects over HTTPS. The
+PowerMate's certificate (usually self-signed) is accepted as it is. To check that it is the
+right device, pin its SHA-256 fingerprint from Settings > TLS:
+
+```bash
+python3 logger.py 192.168.1.50 -u admin -p mypassword -o power_log.csv \
+    --fingerprint 7D:BC:64:35:...:55:B7
+```
+
+A certificate that does not match is refused before the password or the token is sent.
 
 The script will continue to log data until you stop it with `Ctrl+C`.
 
