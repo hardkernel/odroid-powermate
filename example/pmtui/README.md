@@ -167,3 +167,16 @@ update `protocol.go` together with the `.proto` definition.
 ## License
 
 [Apache-2.0](LICENSE)
+
+## HTTPS
+
+pmtui finds out by itself whether the PowerMate serves HTTP or HTTPS: before logging in it
+asks the device without credentials, and uses `https://`/`wss://` when the device redirects
+there. You can also type `https://` in the Host field; PowerMates found on the network with
+HTTPS on are marked `https` and picked with their `https://` address.
+
+The PowerMate's certificate (usually self-signed) is accepted as it is: the traffic is
+encrypted, but which device answers is not checked. To check it, start pmtui with
+`-fingerprint AB:CD:...` (the SHA-256 in Settings > TLS of the PowerMate web UI). It is
+saved in `~/.config/pmtui/known_certs.json`, and a different certificate is then refused
+at login with a `Pin this certificate instead? [y/N]` prompt.

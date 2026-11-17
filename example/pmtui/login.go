@@ -25,6 +25,10 @@ type loginModel struct {
 	selected    int // index into found, -1 when the Host field was typed
 	discovering bool
 	discoverErr error
+
+	// trust is set while the user is asked whether to trust a certificate that is not
+	// the one pinned for this PowerMate.
+	trust *CertError
 }
 
 // discoveredMsg carries the result of an mDNS discovery run.
@@ -100,7 +104,7 @@ func (m *loginModel) Discovered(msg discoveredMsg) {
 	m.found, m.discoverErr = msg.found, msg.err
 	m.selected = -1
 	for i, d := range m.found {
-		if d.Address == m.inputs[0].Value() || d.Hostname == m.inputs[0].Value() {
+		if v := m.inputs[0].Value(); d.Address == v || d.Hostname == v || d.URL == v {
 			m.selected = i
 		}
 	}
@@ -125,7 +129,12 @@ func (m *loginModel) pick(step int) {
 	} else {
 		m.selected = (m.selected + step + len(m.found)) % len(m.found)
 	}
-	m.inputs[0].SetValue(m.found[m.selected].Address)
+	d := m.found[m.selected]
+	host := d.Address
+	if d.TLS && d.URL != "" {
+		host = d.URL
+	}
+	m.inputs[0].SetValue(host)
 	m.inputs[0].CursorEnd()
 }
 
@@ -185,12 +194,22 @@ func (m *loginModel) discoveryView() string {
 			style = style.Foreground(lipgloss.Color("220"))
 		}
 		line := fmt.Sprintf("%-15s %s", d.Address, strings.TrimSuffix(d.Hostname, ".local"))
+		if d.TLS {
+			line += "  https"
+		}
 		if d.Firmware != "" {
 			line += "  " + d.Firmware
 		}
 		lines = append(lines, style.Render(marker+line))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+}
+
+func (m *loginModel) middleView() string {
+	if m.trust != nil {
+		return m.trustView()
+	}
+	return m.discoveryView()
 }
 
 func (m *loginModel) Credentials() (host, username, password string) {
@@ -202,6 +221,28 @@ func (m *loginModel) Credentials() (host, username, password string) {
 func (m *loginModel) Begin() {
 	m.submitting = true
 	m.status = "Connecting..."
+}
+
+// AskTrust shows a certificate that differs from the pinned one and waits for y/N.
+func (m *loginModel) AskTrust(err *CertError) {
+	m.submitting = false
+	m.trust = err
+	m.status = ""
+}
+
+func (m *loginModel) trustView() string {
+	warn := lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+	title := "This PowerMate's HTTPS certificate is not the pinned one."
+	fp := FormatFingerprint(m.trust.Fingerprint)
+	half := len(fp) / 2
+	return lipgloss.JoinVertical(lipgloss.Left,
+		warn.Render(title),
+		"SHA-256 of "+m.trust.Host+":",
+		"  "+fp[:half],
+		"  "+fp[half:],
+		"Compare it with Settings > TLS in the PowerMate web UI.",
+		warn.Render("Pin this certificate instead? [y/N]"),
+	)
 }
 
 func (m *loginModel) Failed(err error) tea.Cmd {
@@ -240,7 +281,7 @@ func (m *loginModel) View(width, height int) string {
 		field(1, "ID"),
 		field(2, "Password"),
 		"",
-		m.discoveryView(),
+		m.middleView(),
 		"",
 		statusStyle.Render(m.status),
 		"",

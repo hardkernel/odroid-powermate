@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -111,6 +112,9 @@ type tui struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	defaultHost string
+	defaultPin  string // -fingerprint, for defaultHost
+
 	width          int
 	height         int
 	darkBackground bool
@@ -157,6 +161,7 @@ type tui struct {
 func newTUI(
 	defaultHost string,
 	defaultUsername string,
+	defaultPin string,
 	openUART bool,
 ) *tui {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -174,6 +179,8 @@ func newTUI(
 	return &tui{
 		ctx:            ctx,
 		cancel:         cancel,
+		defaultHost:    defaultHost,
+		defaultPin:     defaultPin,
 		login:          newLoginModel(defaultHost, defaultUsername),
 		openUART:       openUART,
 		activePage:     pageDashboard,
@@ -385,6 +392,11 @@ func (t *tui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (t *tui) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if result, ok := msg.(loginResultMsg); ok {
+		var certErr *CertError
+		if errors.As(result.err, &certErr) {
+			t.login.AskTrust(certErr)
+			return t, nil
+		}
 		if result.err != nil {
 			return t, t.login.Failed(result.err)
 		}
@@ -413,6 +425,25 @@ func (t *tui) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if found, ok := msg.(discoveredMsg); ok {
 		t.login.Discovered(found)
 		return t, nil
+	}
+	if key, ok := msg.(tea.KeyPressMsg); ok && t.login.trust != nil {
+		// Trust prompt: only an explicit "y" pins the certificate.
+		switch key.String() {
+		case "ctrl+c":
+			return t, tea.Quit
+		case "y", "Y":
+			certErr := t.login.trust
+			host, username, password := t.login.Credentials()
+			if err := saveKnownPin(host, certErr.Fingerprint); err != nil {
+				return t, t.login.Failed(fmt.Errorf("save certificate fingerprint: %w", err))
+			}
+			t.login.trust = nil
+			t.login.Begin()
+			return t, t.loginCmd(host, username, password)
+		default:
+			t.login.trust = nil
+			return t, t.login.Failed(errors.New("certificate not trusted; login cancelled"))
+		}
 	}
 	if key, ok := msg.(tea.KeyPressMsg); ok {
 		switch key.String() {
@@ -445,7 +476,11 @@ func (t *tui) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (t *tui) loginCmd(host, username, password string) tea.Cmd {
 	ctx := t.ctx
 	return func() tea.Msg {
-		apiClient, err := newClient(host, username, password)
+		pin := knownPin(host)
+		if pin == "" && hostKey(host) == hostKey(t.defaultHost) {
+			pin = t.defaultPin
+		}
+		apiClient, err := newClient(host, username, password, pin)
 		if err != nil {
 			return loginResultMsg{err: err}
 		}

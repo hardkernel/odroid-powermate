@@ -20,7 +20,13 @@ func run() error {
 	host := flag.String("host", "192.168.4.1", "PowerMate host, optionally including http:// or https://")
 	id := flag.String("id", "admin", "PowerMate login username")
 	uart := flag.Bool("uart", false, "Open the UART terminal after login")
+	fingerprint := flag.String("fingerprint", "",
+		"pin the -host PowerMate's HTTPS certificate: its SHA-256 fingerprint (Settings > TLS); any other is refused")
 	flag.Parse()
 
-	return newTUI(*host, *id, *uart).Run()
+	pin, err := NormalizeFingerprint(*fingerprint)
+	if err != nil {
+		return fmt.Errorf("-fingerprint: %w", err)
+	}
+	return newTUI(*host, *id, pin, *uart).Run()
 }
