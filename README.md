@@ -23,7 +23,7 @@ This project provides a comprehensive web interface to control power, monitor re
 Before you begin, ensure you have the following installed and configured on your system:
 
 - **[ESP-IDF (Espressif IoT Development Framework)](https://docs.espressif.com/projects/esp-idf/en/latest/esp32c3/get-started/index.html)**: This project is developed and tested with ESP-IDF `v6.0.2`.
-- **[Node.js and npm](https://nodejs.org/)**: Required to build the web application. Node.js LTS version (e.g., 18.x or later) is recommended.
+- **[Node.js and npm](https://nodejs.org/)**: Required to build the web application. Vite 7 needs Node.js 20.19+ or 22.12+ (`engines` in `page/package.json`). Ubuntu 24.04's `nodejs` package is 18.x, so install a newer one from [nodejs.org](https://nodejs.org/en/download) or NodeSource if npm warns `EBADENGINE`.
 - **[Nanopb](https://github.com/nanopb/nanopb)**: Required to build for protobuf.
 
 ### Install dependencies (Ubuntu)

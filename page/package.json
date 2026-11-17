@@ -4,6 +4,9 @@
   "version": "0.0.0",
   "license": "GPL-3.0-only",
   "type": "module",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "npm run build:proto && vite",
     "build": "npm run build:proto && vite build",
