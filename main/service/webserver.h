@@ -22,6 +22,12 @@
 // fit a browser and a client (two WebSockets each) plus requests, with ~84 KB free.
 #define POWERMATE_HTTPS_MAX_OPEN_SOCKETS 6
 
+// Web UI login. JSON escaping can grow a value up to six times, so the login body limit
+// leaves room for both at full length.
+#define WEB_USERNAME_MAX_LEN 32
+#define WEB_PASSWORD_MAX_LEN 64
+#define WEB_LOGIN_MAX_BODY 1024
+
 typedef struct
 {
     size_t queue_depth;
@@ -46,6 +52,15 @@ bool uart_baud_rate_is_supported(long baud_rate);
 esp_err_t change_baud_rate(int baud_rate);
 void register_version_endpoint(httpd_handle_t server);
 esp_err_t register_tls_endpoint(httpd_handle_t server);
+
+/**
+ * Reads the whole request body (Content-Length bytes, which may arrive in several pieces)
+ * into a NUL-terminated heap buffer. Refuses an empty body or one over max_len, and sends
+ * the error response itself; returns NULL then. Free the buffer with webserver_free_body().
+ */
+char* webserver_read_body(httpd_req_t* req, size_t max_len);
+/** Wipes (it may hold a password) and frees a buffer from webserver_read_body(). */
+void webserver_free_body(char* body);
 /** True when the web server runs over HTTPS (the setting is on and the certificate loaded). */
 bool webserver_is_https(void);
 

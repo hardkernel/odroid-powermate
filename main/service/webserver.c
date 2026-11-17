@@ -71,21 +71,58 @@ static esp_err_t index_handler(httpd_req_t* req)
     return httpd_resp_send(req, (const char*)index_html_start, index_html_size);
 }
 
+char* webserver_read_body(httpd_req_t* req, size_t max_len)
+{
+    if (req->content_len == 0 || req->content_len > max_len)
+    {
+        httpd_resp_send_err(req, req->content_len ? HTTPD_413_CONTENT_TOO_LARGE : HTTPD_400_BAD_REQUEST,
+                            req->content_len ? "Request body too large" : "Request body missing");
+        return NULL;
+    }
+    char* buf = malloc(req->content_len + 1);
+    if (!buf)
+    {
+        httpd_resp_send_500(req);
+        return NULL;
+    }
+    size_t got = 0;
+    int timeouts = 0;
+    while (got < req->content_len)
+    {
+        int r = httpd_req_recv(req, buf + got, req->content_len - got);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT && ++timeouts < 3)
+            continue;
+        if (r <= 0)
+        {
+            if (r == HTTPD_SOCK_ERR_TIMEOUT)
+                httpd_resp_send_408(req);
+            buf[got] = '\0';
+            webserver_free_body(buf);
+            return NULL;
+        }
+        got += r;
+    }
+    buf[got] = '\0';
+    return buf;
+}
+
+void webserver_free_body(char* body)
+{
+    if (body)
+    {
+        memset(body, 0, strlen(body));
+        free(body);
+    }
+}
+
 static esp_err_t login_handler(httpd_req_t* req)
 {
-    char content[100]; // Adjust size as needed for username/password
-    int ret = httpd_req_recv(req, content, sizeof(content) - 1); // -1 for null terminator
-    if (ret <= 0)
-    { // 0 means connection closed, < 0 means error
-        if (ret == HTTPD_SOCK_ERR_TIMEOUT)
-        {
-            httpd_resp_send_408(req);
-        }
+    char* content = webserver_read_body(req, WEB_LOGIN_MAX_BODY);
+    if (!content)
         return ESP_FAIL;
-    }
-    content[ret] = '\0'; // Null-terminate the received data
 
     cJSON* root = cJSON_Parse(content);
+    webserver_free_body(content);
     if (root == NULL)
     {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid JSON");
