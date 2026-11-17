@@ -62,16 +62,22 @@ static uint16_t last_warning_flags = 0;
 // Shunt resistors, in milliohms.
 static const uint16_t shunt_mohm[INA3221_CHANNELS] = {10, 10, 10};
 
-// 16-sample averaging, 140 us bus and 1.1 ms shunt conversion time. One averaged result
-// per channel every 3 x (140 + 1100) us x 16 = 59.5 ms. The warning alert compares these
-// averages, so this window is also the warning cut-off delay; the critical alert checks
-// every single conversion. A shunt conversion takes 1.1 of every 3.72 ms, near the 1/3
-// maximum for three channels sharing one ADC. The critical alert is latched so the
-// shutdown task can still read which channel tripped.
+// 140 us bus and shunt conversions, 64-sample averaging: one averaged result per channel
+// every 3 x (140 + 140) us x 64 = 53.8 ms. The warning alert compares these averages, so
+// this window is also the warning cut-off delay.
+//
+// The critical alert compares every single shunt conversion, and the three channels share
+// one ADC, so a channel's shunt is measured for one conversion in every 3 x (shunt + bus).
+// At 140/140 us that is 140 of every 840 us, so an over-current lasting 1.1 ms always
+// fills a whole conversion and trips (at the datasheet's slowest 154 us conversions). The
+// 1.1 ms shunt conversion used before left gaps of up to 2.9 ms and needed 5.3 ms. The
+// shorter conversion is noisier (sigma ~7 mA on a 10 mOhm shunt), far below the 1 A
+// minimum critical limit. The critical alert is latched so the shutdown task can still
+// read which channel tripped.
 static const ina3221_config_t ina3221_config = {
-    .avg = INA3221_AVG_16,
+    .avg = INA3221_AVG_64,
     .bus_ct = INA3221_CT_140US,
-    .shunt_ct = INA3221_CT_1100US,
+    .shunt_ct = INA3221_CT_140US,
     .latch_critical = true,
     .latch_warning = false,
 };
@@ -364,7 +370,7 @@ typedef struct
 } channel_accumulator_t;
 
 // Every averaged result since the last report, so a report covers its whole period
-// instead of the one 59.5 ms window that happened to be in the registers.
+// instead of the one averaging window that happened to be in the registers.
 static channel_accumulator_t accumulators[INA3221_CHANNELS];
 static portMUX_TYPE accumulator_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -563,7 +569,7 @@ static void shutdown_load_sw_task(void* pvParameters)
 
         if (status_err == ESP_OK)
         {
-            cf |= status.critical; // BIT2=IN1/USB, BIT1=IN2/MAIN, BIT0=IN3/VIN
+            cf |= status.critical;
             notify_warning_task(status.warning);
             if (cf)
                 push_critical_fault_sources(cf);

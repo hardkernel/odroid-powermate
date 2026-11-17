@@ -25,7 +25,7 @@ const (
 
 // ChannelData is one channel of a sensor report. Since firmware v1.4.x the values are
 // the mean over the report period and CurrentMax/PowerMax the highest of the INA3221's
-// 59.5 ms averages in it; older firmware sends a snapshot and leaves the maxima zero.
+// ~54 ms averages in it; older firmware sends a snapshot and leaves the maxima zero.
 type ChannelData struct {
 	Voltage    float32
 	Current    float32
