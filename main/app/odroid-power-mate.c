@@ -10,7 +10,7 @@
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
-#include "i2cdev.h"
+#include "i2c_bus.h"
 #include "indicator.h"
 #include "esp_app_desc.h"
 #include "nconfig.h"
@@ -24,7 +24,7 @@ void app_main(void)
     printf("\n\n== ODROID POWER-MATE ===\n");
     printf("Version: %s\n\n", esp_app_get_description()->version);
 
-    ESP_ERROR_CHECK(i2cdev_init());
+    ESP_ERROR_CHECK(i2c_bus_init());
     init_led();
     led_set(LED_BLU, BLINK_TRIPLE);
     led_off(LED_BLU);

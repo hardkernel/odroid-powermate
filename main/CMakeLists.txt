@@ -24,7 +24,7 @@ if (NOT PROTOC_EXECUTABLE OR NOT NANOPB_PLUGIN)
     message(FATAL_ERROR "protoc or protoc-gen-nanopb not found! Please install nanopb (Ubuntu: apt install nanopb).")
 endif ()
 
-idf_component_register(SRC_DIRS "app" "nconfig" "wifi" "indicator" "service"
+idf_component_register(SRC_DIRS "app" "drivers" "nconfig" "wifi" "indicator" "service"
         INCLUDE_DIRS "include"
         EMBED_FILES ${GZ_OUTPUT_FILE}
 )

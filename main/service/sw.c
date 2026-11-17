@@ -11,7 +11,6 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <ina3221.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,10 +26,8 @@
 #include "status.pb.h"
 #include "webserver.h"
 
-#define I2C_PORT 0
+#define PCA9557_ADDR 0x18
 
-#define GPIO_SDA CONFIG_I2C_GPIO_SDA
-#define GPIO_SCL CONFIG_I2C_GPIO_SCL
 #define GPIO_MAIN CONFIG_EXPANDER_GPIO_SW_12V
 #define GPIO_USB CONFIG_EXPANDER_GPIO_SW_5V
 #define GPIO_PWR CONFIG_EXPANDER_GPIO_TRIGGER_POWER
@@ -48,8 +45,6 @@ static bool load_switch_5v_status = false;
 
 static SemaphoreHandle_t expander_mutex;
 #define MUTEX_TIMEOUT (pdMS_TO_TICKS(100))
-
-static i2c_dev_t pca = {0};
 
 static esp_timer_handle_t power_trigger_timer;
 static esp_timer_handle_t reset_trigger_timer;
@@ -140,16 +135,16 @@ void publish_load_switch_status()
 
 esp_err_t sync_load_switch_status_from_hw()
 {
-    uint32_t val = 0;
-    esp_err_t err = pca9557_get_level(&pca, CONFIG_EXPANDER_GPIO_SW_12V, &val);
+    bool level = false;
+    esp_err_t err = pca9557_get_level(CONFIG_EXPANDER_GPIO_SW_12V, &level);
     if (err != ESP_OK)
         return err;
-    load_switch_12v_status = val != 0 ? true : false;
+    load_switch_12v_status = level;
 
-    err = pca9557_get_level(&pca, CONFIG_EXPANDER_GPIO_SW_5V, &val);
+    err = pca9557_get_level(CONFIG_EXPANDER_GPIO_SW_5V, &level);
     if (err != ESP_OK)
         return err;
-    load_switch_5v_status = val != 0 ? true : false;
+    load_switch_5v_status = level;
 
     send_sw_status_message();
     return ESP_OK;
@@ -173,9 +168,9 @@ esp_err_t set_load_switches(bool main_on, bool usb_on)
     esp_err_t main_err = ESP_OK;
     esp_err_t usb_err = ESP_OK;
     if (load_switch_12v_status != main_on)
-        main_err = pca9557_set_level(&pca, GPIO_MAIN, main_on);
+        main_err = pca9557_set_level(GPIO_MAIN, main_on);
     if (load_switch_5v_status != usb_on)
-        usb_err = pca9557_set_level(&pca, GPIO_USB, usb_on);
+        usb_err = pca9557_set_level(GPIO_USB, usb_on);
     xSemaphoreGive(expander_mutex);
 
     if (main_err != ESP_OK || usb_err != ESP_OK)
@@ -207,26 +202,26 @@ static void trigger_off_callback(void* arg)
     }
 
     uint32_t gpio_pin = (int)arg;
-    pca9557_set_level(&pca, gpio_pin, 1);
+    pca9557_set_level(gpio_pin, 1);
     xSemaphoreGive(expander_mutex);
 }
 
 void config_sw()
 {
-    ESP_ERROR_CHECK(pca9557_set_mode(&pca, GPIO_MAIN, PCA9557_MODE_OUTPUT));
-    ESP_ERROR_CHECK(pca9557_set_mode(&pca, GPIO_USB, PCA9557_MODE_OUTPUT));
-    ESP_ERROR_CHECK(pca9557_set_mode(&pca, GPIO_PWR, PCA9557_MODE_OUTPUT));
-    ESP_ERROR_CHECK(pca9557_set_mode(&pca, GPIO_RST, PCA9557_MODE_OUTPUT));
+    ESP_ERROR_CHECK(pca9557_set_output(GPIO_MAIN));
+    ESP_ERROR_CHECK(pca9557_set_output(GPIO_USB));
+    ESP_ERROR_CHECK(pca9557_set_output(GPIO_PWR));
+    ESP_ERROR_CHECK(pca9557_set_output(GPIO_RST));
 
-    ESP_ERROR_CHECK(pca9557_set_level(&pca, GPIO_PWR, 1));
-    ESP_ERROR_CHECK(pca9557_set_level(&pca, GPIO_RST, 1));
+    ESP_ERROR_CHECK(pca9557_set_level(GPIO_PWR, 1));
+    ESP_ERROR_CHECK(pca9557_set_level(GPIO_RST, 1));
 
     ESP_ERROR_CHECK(sync_load_switch_status_from_hw());
 }
 
 void init_sw()
 {
-    ESP_ERROR_CHECK(pca9557_init_desc(&pca, 0x18, I2C_PORT, GPIO_SDA, GPIO_SCL));
+    ESP_ERROR_CHECK(pca9557_init(PCA9557_ADDR));
 
     expander_mutex = xSemaphoreCreateMutex();
     ESP_ERROR_CHECK(expander_mutex ? ESP_OK : ESP_ERR_NO_MEM);
@@ -251,7 +246,7 @@ void trig_power()
         ESP_LOGW(TAG, "Control error");
         return;
     }
-    pca9557_set_level(&pca, GPIO_PWR, 0);
+    pca9557_set_level(GPIO_PWR, 0);
     xSemaphoreGive(expander_mutex);
     push_event(EV_INFO, "power triggered");
     esp_timer_stop(power_trigger_timer);
@@ -266,7 +261,7 @@ void trig_reset()
         ESP_LOGW(TAG, "Control error");
         return;
     }
-    pca9557_set_level(&pca, GPIO_RST, 0);
+    pca9557_set_level(GPIO_RST, 0);
     xSemaphoreGive(expander_mutex);
     push_event(EV_INFO, "reset triggered");
     esp_timer_stop(reset_trigger_timer);
