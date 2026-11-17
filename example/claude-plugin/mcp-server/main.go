@@ -9,7 +9,8 @@
 //
 //	POWERMATE_HOST      PowerMate address; when unset, the address saved by
 //	                    powermate_connect. With neither, every tool but
-//	                    powermate_connect asks the agent to get the address from the user.
+//	                    powermate_connect and powermate_discover asks the agent
+//	                    to let the user pick a discovered PowerMate or give an address.
 //	POWERMATE_USERNAME  web login (default "admin")
 //	POWERMATE_PASSWORD  web login (default "password")
 //	POWERMATE_STATE_DIR token cache and capture logs (default: user cache dir)
@@ -123,7 +124,8 @@ func main() {
 			"configure the PowerMate itself (network, limits, options) and preview their changes and risks " +
 			"unless confirm=true. sbc_power off/cycle is a hard power cut. Console output is buffered " +
 			"continuously; use cursors from one tool as 'since' in the next to avoid missing output. " +
-			"If no PowerMate address is configured, ask the user for it and call powermate_connect; never guess one.",
+			"If no PowerMate address is configured, call powermate_discover, show the user the PowerMates it finds " +
+			"and let them pick one (or give an address), then call powermate_connect; never guess one.",
 	})
 	server.AddReceivingMiddleware(useDevice(m))
 	t := &tools{m: m, logDir: filepath.Join(stateDir, "logs")}
@@ -135,12 +137,13 @@ func main() {
 	}
 }
 
-const noHostMsg = "No PowerMate address is configured. Ask the user for the PowerMate's IP address or host " +
-	"name (shown in its web UI, the router's DHCP list, or wifi_status on its USB debug console) and call " +
-	"powermate_connect(host=...); do not guess one. A factory-fresh PowerMate is not on any network yet: the user " +
+const noHostMsg = "No PowerMate address is configured. Call powermate_discover to list the PowerMates on the " +
+	"local network and ask the user which one to use, or ask for its IP address or host name (shown in its web " +
+	"UI, the router's DHCP list, or wifi_status on its USB debug console). Then call powermate_connect(host=...); " +
+	"do not guess one or pick one for the user. A factory-fresh PowerMate is not on any network yet: the user " +
 	"first joins it to Wi-Fi from a phone through its setup AP (powermate / 192.168.4.1)."
 
-// useDevice answers every tool call except powermate_connect with noHostMsg until an
+// useDevice answers every tool call except powermate_connect and powermate_discover with noHostMsg until an
 // address is known, and keeps the PowerMate streams open while a tool call runs.
 func useDevice(m *manager) mcp.Middleware {
 	return func(next mcp.MethodHandler) mcp.MethodHandler {
@@ -151,7 +154,7 @@ func useDevice(m *manager) mcp.Middleware {
 			}
 			dev := m.current()
 			if dev == nil {
-				if call.Params.Name != "powermate_connect" {
+				if call.Params.Name != "powermate_connect" && call.Params.Name != "powermate_discover" {
 					return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: noHostMsg}}}, nil
 				}
 				return next(ctx, method, req)

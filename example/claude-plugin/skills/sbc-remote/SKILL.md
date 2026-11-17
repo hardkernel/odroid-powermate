@@ -42,10 +42,13 @@ Check `main_output_on`, `uart_stream`/`status_stream` = connected, the latest po
 `console_last_line` (it shows where the console is: `login:`, `=> `, `# `, a GRUB menu...).
 Read `warnings` before doing anything else.
 
-If it says no PowerMate address is configured, ask the user for the address (shown in
-the PowerMate web UI or the router's DHCP list), then call `powermate_connect(host=...)`.
-Never guess or scan for one. A PowerMate that is not on the network yet needs the
-factory-fresh setup below first.
+If it says no PowerMate address is configured, call `powermate_discover`. Show the user
+the PowerMates it lists (name such as `ODROID PowerMate b0f4`, host name
+`odroid-pm-b0f4.local`, IP, firmware) and ask which one to use, even when only one
+answers; the suffix is the end of the PowerMate's MAC address. If none answers, ask for
+the address (shown in the PowerMate web UI or the router's DHCP list). Then call
+`powermate_connect(host=...)`. Never guess one or choose for the user. A PowerMate that is
+not on the network yet needs the factory-fresh setup below first.
 
 ## Cursors
 
@@ -181,7 +184,9 @@ Additional rules:
 
 ### When the PowerMate cannot be reached
 The tools cannot fix this themselves. Tell the user the options, in this order:
-1. Look up its address in the router's DHCP list, then `powermate_connect(host=...)`.
+1. `powermate_discover` (same subnet only), or look up its address in the router's DHCP
+   list (host name `odroid-pm-<mac>`), then `powermate_connect(host=...)` with the one the
+   user picks.
 2. **USB debug console** (debug use only, not normally connected): connect a PC to the
    PowerMate's USB port and open its console, e.g. `idf.py -p /dev/ttyACM0 monitor` or
    `minicom -D /dev/ttyACM0 -b 115200`. At the `powermate >` prompt run `wifi_status`
@@ -206,8 +211,9 @@ Factory state: Wi-Fi mode `apsta`, setup AP `powermate` (password `hardkernel`) 
    can spark.
 2. **Put it on the network.** The first Wi-Fi setup is the user's job: connect a phone to
    the `powermate` AP, open http://192.168.4.1, log in, and join the lab Wi-Fi in the
-   settings. Then ask for the PowerMate's new address (shown in the web UI, or in the
-   router's DHCP list) and call `powermate_connect(host=...)`. If the user says this
+   settings. Then run `powermate_discover` and let the user pick the PowerMate (or ask for
+   its new address, shown in the web UI or the router's DHCP list), and call
+   `powermate_connect(host=...)`. If the user says this
    computer itself is on the `powermate` AP, the tools can do the same step:
    `powermate_connect(host=192.168.4.1, save=false)`,
    `powermate_wifi_connect` with preview and confirm, then `powermate_connect` to the

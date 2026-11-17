@@ -75,6 +75,15 @@ func registerAdminTools(server *mcp.Server, t *tools) {
 	}, t.connect)
 
 	mcp.AddTool(server, &mcp.Tool{
+		Name: "powermate_discover",
+		Description: "List the PowerMates that answer an mDNS query on this computer's local networks " +
+			"(name, host name, IP address, firmware). Works before any address is configured. Show the list " +
+			"to the user and let them pick one for powermate_connect; do not pick one yourself, even when only " +
+			"one answers. PowerMates on another subnet, behind a router or still in factory setup are not found.",
+		Annotations: readOnly,
+	}, t.discover)
+
+	mcp.AddTool(server, &mcp.Tool{
 		Name: "powermate_wifi_scan",
 		Description: "List Wi-Fi networks the PowerMate can see. The scan blocks the PowerMate for a few " +
 			"seconds; the status and UART streams may drop and reconnect, and a STA connection that is " +
@@ -190,6 +199,40 @@ func (t *tools) connect(ctx context.Context, _ *mcp.CallToolRequest, in connectI
 	if source == "env" {
 		out.Note = "POWERMATE_HOST is set in the environment and will win again next session; " +
 			"update or unset it to keep this address."
+	}
+	return nil, out, nil
+}
+
+// ---- powermate_discover ----
+
+type discoverIn struct {
+	Seconds float64 `json:"seconds,omitempty" jsonschema:"how long to listen for answers (default 2, max 10)"`
+}
+
+type discoverOut struct {
+	PowerMates []powermate.Discovered `json:"powermates"`
+	Current    string                 `json:"current_host,omitempty"`
+	Note       string                 `json:"note"`
+}
+
+func (t *tools) discover(ctx context.Context, _ *mcp.CallToolRequest, in discoverIn) (*mcp.CallToolResult, discoverOut, error) {
+	wait := 2 * time.Second
+	if in.Seconds > 0 {
+		wait = time.Duration(math.Min(in.Seconds, 10) * float64(time.Second))
+	}
+	found, err := powermate.Discover(ctx, wait)
+	if err != nil {
+		return nil, discoverOut{}, fmt.Errorf("mDNS query failed: %w", err)
+	}
+	out := discoverOut{PowerMates: found}
+	out.Current, _ = t.m.hostInfo()
+	if len(found) == 0 {
+		out.Note = "No PowerMate answered. Ask the user for its address (web UI, the router's DHCP list, or " +
+			"wifi_status on its USB debug console). A factory-fresh PowerMate first needs Wi-Fi setup from a phone " +
+			"through its setup AP (powermate / 192.168.4.1)."
+	} else {
+		out.Note = "Show this list to the user and ask which PowerMate to use; then call powermate_connect with its " +
+			"address. Do not choose one for them."
 	}
 	return nil, out, nil
 }

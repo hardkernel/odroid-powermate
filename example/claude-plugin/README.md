@@ -42,7 +42,7 @@ from the shell that starts Claude Code:
 
 | Variable | Default | |
 |---|---|---|
-| `POWERMATE_HOST` | saved address | PowerMate address. When unset, the server uses the address saved by `powermate_connect`. With neither, the tools ask the agent to get the address from the user. |
+| `POWERMATE_HOST` | saved address | PowerMate address. When unset, the server uses the address saved by `powermate_connect`. With neither, the tools ask the agent to let the user pick one from `powermate_discover` or give the address. |
 | `POWERMATE_USERNAME` | `admin` | PowerMate web login |
 | `POWERMATE_PASSWORD` | `password` | PowerMate web login |
 | `POWERMATE_IDLE_MINUTES` | `10` | Close the PowerMate streams after this many minutes without a tool call. `0` keeps them open. |
@@ -119,6 +119,7 @@ Tool names are prefixed `mcp__plugin_powermate_powermate__`.
 | `sbc_power_record` | read | Power summary over a window, optional CSV |
 | `sbc_events` | read | PowerMate events |
 | `powermate_settings` | read | PowerMate configuration, address in use, diagnostics |
+| `powermate_discover` | read | List the PowerMates on the local network over mDNS (`_powermate._tcp`) for the user to pick from |
 | `powermate_connect` | config | Set or switch the PowerMate address and optionally remember it |
 | `powermate_wifi_scan` | read | Networks visible to the PowerMate |
 | `powermate_wifi_connect` | **risky** | Join a Wi-Fi network (STA) |

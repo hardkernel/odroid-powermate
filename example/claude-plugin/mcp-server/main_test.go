@@ -31,11 +31,14 @@ func TestUseDeviceWithoutAddress(t *testing.T) {
 
 	reached = ""
 	if res := call("sbc_status"); !res.IsError || reached != "" ||
-		!strings.Contains(res.Content[0].(*mcp.TextContent).Text, "Ask the user") {
+		!strings.Contains(res.Content[0].(*mcp.TextContent).Text, "powermate_discover") {
 		t.Fatalf("sbc_status without an address: %+v, reached %q", res, reached)
 	}
 	if res := call("powermate_connect"); res.IsError || reached != "powermate_connect" {
 		t.Fatalf("powermate_connect blocked without an address")
+	}
+	if res := call("powermate_discover"); res.IsError || reached != "powermate_discover" {
+		t.Fatalf("powermate_discover blocked without an address")
 	}
 	if _, err := m.connect(context.Background(), "", true); err == nil {
 		t.Fatal("empty host accepted")
