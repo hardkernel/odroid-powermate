@@ -52,6 +52,11 @@ initial values shown on that screen:
 go run . -host 192.168.4.1 -id admin
 ```
 
+The login screen also lists the PowerMates that answer an mDNS query on the local
+network (`_powermate._tcp`, same subnet only) with their address, host name
+(`odroid-pm-<last two MAC bytes>`) and firmware. Press `Ctrl+N`/`Ctrl+P` to copy one
+into the Host field and `F5` to search again. Nothing is filled in until you pick one.
+
 The password is accepted only by the masked field on the login screen. It
 cannot be supplied as a command-line argument or environment variable.
 

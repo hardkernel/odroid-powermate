@@ -10,7 +10,8 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/vt v0.0.0-20260727090823-41c9e6be3365
 	github.com/gorilla/websocket v1.5.3
-	golang.org/x/term v0.30.0
+	golang.org/x/net v0.51.0
+	golang.org/x/term v0.40.0
 	google.golang.org/protobuf v1.36.6
 )
 

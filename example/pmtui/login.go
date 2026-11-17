@@ -4,7 +4,10 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -16,6 +19,27 @@ type loginModel struct {
 	focus      int
 	submitting bool
 	status     string
+
+	// PowerMates found over mDNS; Ctrl+N/Ctrl+P copy one into the Host field.
+	found       []Discovered
+	selected    int // index into found, -1 when the Host field was typed
+	discovering bool
+	discoverErr error
+}
+
+// discoveredMsg carries the result of an mDNS discovery run.
+type discoveredMsg struct {
+	found []Discovered
+	err   error
+}
+
+const discoverWait = 2 * time.Second
+
+func discoverCmd(ctx context.Context) tea.Cmd {
+	return func() tea.Msg {
+		found, err := Discover(ctx, discoverWait)
+		return discoveredMsg{found: found, err: err}
+	}
 }
 
 func newLoginModel(defaultHost, defaultUsername string) loginModel {
@@ -42,7 +66,9 @@ func newLoginModel(defaultHost, defaultUsername string) loginModel {
 	password.SetWidth(36)
 
 	model := loginModel{
-		inputs: [3]textinput.Model{host, username, password},
+		inputs:      [3]textinput.Model{host, username, password},
+		selected:    -1,
+		discovering: true,
 	}
 	if strings.TrimSpace(defaultHost) != "" &&
 		strings.TrimSpace(defaultUsername) != "" {
@@ -68,6 +94,41 @@ func (m *loginModel) focusInput() tea.Cmd {
 	return cmd
 }
 
+// Discovered records an mDNS result. The Host field is left alone: the user picks.
+func (m *loginModel) Discovered(msg discoveredMsg) {
+	m.discovering = false
+	m.found, m.discoverErr = msg.found, msg.err
+	m.selected = -1
+	for i, d := range m.found {
+		if d.Address == m.inputs[0].Value() || d.Hostname == m.inputs[0].Value() {
+			m.selected = i
+		}
+	}
+}
+
+// Rediscover marks a new discovery run as started.
+func (m *loginModel) Rediscover() {
+	m.discovering = true
+	m.discoverErr = nil
+}
+
+func (m *loginModel) pick(step int) {
+	if len(m.found) == 0 {
+		return
+	}
+	if m.selected < 0 {
+		if step > 0 {
+			m.selected = 0
+		} else {
+			m.selected = len(m.found) - 1
+		}
+	} else {
+		m.selected = (m.selected + step + len(m.found)) % len(m.found)
+	}
+	m.inputs[0].SetValue(m.found[m.selected].Address)
+	m.inputs[0].CursorEnd()
+}
+
 func (m *loginModel) Update(msg tea.Msg) (tea.Cmd, bool) {
 	if m.submitting {
 		return nil, false
@@ -75,6 +136,12 @@ func (m *loginModel) Update(msg tea.Msg) (tea.Cmd, bool) {
 
 	if key, ok := msg.(tea.KeyPressMsg); ok {
 		switch key.String() {
+		case "ctrl+n":
+			m.pick(1)
+			return nil, false
+		case "ctrl+p":
+			m.pick(-1)
+			return nil, false
 		case "tab", "down":
 			m.focus = (m.focus + 1) % len(m.inputs)
 			return m.focusInput(), false
@@ -91,8 +158,39 @@ func (m *loginModel) Update(msg tea.Msg) (tea.Cmd, bool) {
 	}
 
 	var cmd tea.Cmd
+	before := m.inputs[0].Value()
 	m.inputs[m.focus], cmd = m.inputs[m.focus].Update(msg)
+	if m.inputs[0].Value() != before {
+		m.selected = -1 // typed over the picked address
+	}
 	return cmd, false
+}
+
+func (m *loginModel) discoveryView() string {
+	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	switch {
+	case m.discovering:
+		return dim.Render("Looking for PowerMates on the network...")
+	case m.discoverErr != nil:
+		return dim.Render("Network discovery failed: " + m.discoverErr.Error())
+	case len(m.found) == 0:
+		return dim.Render("No PowerMate found on this network (F5 rescan)")
+	}
+	lines := []string{dim.Render("On this network (Ctrl+N/Ctrl+P pick, F5 rescan):")}
+	for i, d := range m.found {
+		marker := "  "
+		style := lipgloss.NewStyle()
+		if i == m.selected {
+			marker = "› "
+			style = style.Foreground(lipgloss.Color("220"))
+		}
+		line := fmt.Sprintf("%-15s %s", d.Address, strings.TrimSuffix(d.Hostname, ".local"))
+		if d.Firmware != "" {
+			line += "  " + d.Firmware
+		}
+		lines = append(lines, style.Render(marker+line))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 func (m *loginModel) Credentials() (host, username, password string) {
@@ -131,7 +229,7 @@ func (m *loginModel) View(width, height int) string {
 	statusStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("196")).
 		Align(lipgloss.Center).
-		Width(48)
+		Width(56)
 	if m.submitting {
 		statusStyle = statusStyle.Foreground(lipgloss.Color("220"))
 	}
@@ -141,6 +239,8 @@ func (m *loginModel) View(width, height int) string {
 		field(0, "Host"),
 		field(1, "ID"),
 		field(2, "Password"),
+		"",
+		m.discoveryView(),
 		"",
 		statusStyle.Render(m.status),
 		"",
@@ -152,7 +252,7 @@ func (m *loginModel) View(width, height int) string {
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("220")).
 		Padding(1, 2).
-		Width(52).
+		Width(62).
 		Render(content)
 
 	return lipgloss.Place(

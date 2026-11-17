@@ -197,7 +197,7 @@ func (t *tui) Run() error {
 }
 
 func (t *tui) Init() tea.Cmd {
-	return tea.Batch(t.login.Init(), tea.RequestBackgroundColor)
+	return tea.Batch(t.login.Init(), tea.RequestBackgroundColor, discoverCmd(t.ctx))
 }
 
 func (t *tui) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -410,9 +410,21 @@ func (t *tui) updateLogin(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return t, tea.Batch(commands...)
 	}
 
-	if key, ok := msg.(tea.KeyPressMsg); ok &&
-		key.String() == "ctrl+c" {
-		return t, tea.Quit
+	if found, ok := msg.(discoveredMsg); ok {
+		t.login.Discovered(found)
+		return t, nil
+	}
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		switch key.String() {
+		case "ctrl+c":
+			return t, tea.Quit
+		case "f5":
+			if !t.login.discovering {
+				t.login.Rediscover()
+				return t, discoverCmd(t.ctx)
+			}
+			return t, nil
+		}
 	}
 
 	cmd, submit := t.login.Update(msg)
