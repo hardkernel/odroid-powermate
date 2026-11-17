@@ -10,7 +10,8 @@
 #include "esp_err.h"
 #include "esp_http_server.h"
 
-#define MAX_TOKENS 4
+// One per login (browser tab, pmtui, Claude plugin); the oldest is dropped when full.
+#define MAX_TOKENS 6
 #define TOKEN_LENGTH 33 // 32 characters + null terminator
 
 // Function to initialize the authentication module

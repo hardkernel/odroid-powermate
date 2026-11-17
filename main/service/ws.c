@@ -28,7 +28,7 @@
 #define UART_TX_BUFFER_SIZE 2048
 #define UART_WS_QUEUE_LENGTH 8
 #define UART_MIN_FREE_HEAP (48 * 1024)
-#define UART_WS_LRU_UPDATE_INTERVAL_MS 1000
+#define WS_LRU_UPDATE_INTERVAL_MS 1000
 #define UART_TX_PIN CONFIG_GPIO_UART_TX
 #define UART_RX_PIN CONFIG_GPIO_UART_RX
 #define UART_DEFAULT_BAUD_RATE 1500000
@@ -194,12 +194,15 @@ static void ws_sender_task(void* arg)
         size_t clients = MAX_CLIENT;
         if (httpd_get_client_list(server, &clients, client_fds) == ESP_OK)
         {
+            // httpd closes the least recently used session when a new connection arrives
+            // and all are taken. A WebSocket only counts as used when the client sends
+            // something, which the status and UART streams almost never do, so a page load
+            // would close a live stream before an idle keep-alive connection. The status
+            // stream sends at least every 5 s (Wi-Fi status), so it marks every live
+            // WebSocket, the UART ones included, as used once a second.
             TickType_t now = xTaskGetTickCount();
-            bool update_uart_lru =
-                config->uart_stream &&
-                (last_lru_update == 0 ||
-                 now - last_lru_update >= pdMS_TO_TICKS(UART_WS_LRU_UPDATE_INTERVAL_MS));
-            bool uart_lru_updated = false;
+            bool update_lru = !config->uart_stream &&
+                (last_lru_update == 0 || now - last_lru_update >= pdMS_TO_TICKS(WS_LRU_UPDATE_INTERVAL_MS));
 
             cleanup_client_fds(client_fds, clients);
 
@@ -212,9 +215,12 @@ static void ws_sender_task(void* arg)
             for (size_t i = 0; i < clients; ++i)
             {
                 int fd = client_fds[i];
-                if (httpd_sess_get_ctx(server, fd) != (config->uart_stream ? (void*)&uart_ws_session : (void*)&status_ws_session) ||
-                    fd_in_list(blocked_ws_fds, fd) ||
-                    httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
+                void* ctx = httpd_sess_get_ctx(server, fd);
+                bool websocket = (ctx == &status_ws_session || ctx == &uart_ws_session) &&
+                    !fd_in_list(blocked_ws_fds, fd) && httpd_ws_get_fd_info(server, fd) == HTTPD_WS_CLIENT_WEBSOCKET;
+                if (websocket && update_lru)
+                    httpd_sess_update_lru_counter(server, fd);
+                if (!websocket || ctx != (config->uart_stream ? (void*)&uart_ws_session : (void*)&status_ws_session))
                     continue;
 
                 esp_err_t err = httpd_ws_send_frame_async(server, fd, &frame);
@@ -225,13 +231,9 @@ static void ws_sender_task(void* arg)
                     ESP_LOGW(TAG, "%s: send failed for fd %d: %s", config->name, fd, esp_err_to_name(err));
                     httpd_sess_trigger_close(server, fd);
                 }
-                else if (update_uart_lru && httpd_sess_update_lru_counter(server, fd) == ESP_OK)
-                {
-                    uart_lru_updated = true;
-                }
             }
 
-            if (uart_lru_updated)
+            if (update_lru)
                 last_lru_update = now;
         }
         free(msg.data);

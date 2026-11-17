@@ -26,9 +26,14 @@ CONFIG_LWIP_TCPIP_CORE_LOCKING_INPUT=y
 CONFIG_LWIP_IRAM_OPTIMIZATION=y
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
 CONFIG_LWIP_IPV6=n
+# The web server's 10 sessions (POWERMATE_HTTP_MAX_OPEN_SOCKETS) plus its 3 internal
+# sockets. A browser holds two WebSockets and opens one or two more while loading.
+CONFIG_LWIP_MAX_SOCKETS=13
 # 8 x MSS per socket. 64 KB let one page load take nearly all free heap and made
 # concurrent loads fail; 8 MSS loads the page ~5x faster and keeps >40 KB free
-# under five parallel loads.
+# under eight parallel loads with two streaming clients. 6 MSS was slower (0.16 s vs
+# 0.12 s per page) and dropped more UART data at full line rate, as the UART stream
+# backed up into its queue.
 CONFIG_LWIP_TCP_SND_BUF_DEFAULT=11520
 CONFIG_LWIP_TCP_WND_DEFAULT=5760
 CONFIG_LWIP_TCP_RECVMBOX_SIZE=64

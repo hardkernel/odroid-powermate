@@ -4,6 +4,7 @@
  */
 
 #include "webserver.h"
+#include "sdkconfig.h"
 #include <stdio.h>
 #include <string.h>
 #include "auth.h"
@@ -180,15 +181,21 @@ static esp_err_t login_handler(httpd_req_t* req)
 }
 
 
+// An sdkconfig generated before CONFIG_LWIP_MAX_SOCKETS was raised makes httpd_start fail,
+// which leaves the device without a web UI and without current limits. sdkconfig is not
+// refreshed from sdkconfig.defaults once it exists: delete it and rebuild.
+_Static_assert(POWERMATE_HTTP_MAX_OPEN_SOCKETS + 3 <= CONFIG_LWIP_MAX_SOCKETS,
+               "CONFIG_LWIP_MAX_SOCKETS too small for POWERMATE_HTTP_MAX_OPEN_SOCKETS: delete sdkconfig and rebuild");
+
 void start_webserver(void)
 {
     auth_init();
 
     httpd_handle_t server = NULL;
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
-    // Measured peak is ~3 KB (settings read, Wi-Fi scan, WebSocket input); settings
-    // writes with NVS were not measured, so keep a wide margin.
-    config.stack_size = 1024 * 7;
+    // Measured peak is ~3.5 KB (settings and current-limit writes with NVS and I2C,
+    // Wi-Fi scan, WebSocket input, ten sessions under a full-rate UART stream).
+    config.stack_size = 1024 * 6;
     config.max_uri_handlers = 12;
     config.task_priority = 12;
     config.max_open_sockets = POWERMATE_HTTP_MAX_OPEN_SOCKETS;

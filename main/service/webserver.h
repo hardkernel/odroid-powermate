@@ -14,7 +14,9 @@
 #include <stdint.h>
 #include "esp_http_server.h"
 
-#define POWERMATE_HTTP_MAX_OPEN_SOCKETS 7
+// Must stay <= CONFIG_LWIP_MAX_SOCKETS - 3 (httpd's own sockets). 10 holds three
+// browsers (two WebSockets each) plus the requests of a page load.
+#define POWERMATE_HTTP_MAX_OPEN_SOCKETS 10
 
 typedef struct
 {
