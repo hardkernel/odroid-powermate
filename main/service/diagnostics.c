@@ -100,6 +100,7 @@ static esp_err_t diagnostics_get_handler(httpd_req_t* req)
     cJSON_AddNumberToObject(root, "websocket_close_retries", ws_diagnostics.websocket_close_retries);
     cJSON_AddNumberToObject(root, "websocket_not_ready_skips", ws_diagnostics.websocket_not_ready_skips);
     cJSON_AddNumberToObject(root, "websocket_heap_skips", ws_diagnostics.websocket_heap_skips);
+    cJSON_AddNumberToObject(root, "websocket_stall_closes", ws_diagnostics.websocket_stall_closes);
 
     wifi_sta_diagnostics_t wifi_diagnostics;
     wifi_get_sta_diagnostics(&wifi_diagnostics);

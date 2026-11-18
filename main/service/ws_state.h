@@ -20,6 +20,17 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "freertos/FreeRTOS.h" // TickType_t
+
+// A WebSocket whose writes are skipped (not ready) for this long is closed. Longer than the
+// page's 5 s pong timeout and pmtui's 15 s read deadline, so slow live clients survive.
+#define WS_STALL_CLOSE_MS 20000
+// A heap skip this long after the previous skip starts a new stall clock. Heap skips happen
+// over HTTPS only, in the httpd task, which re-polls owed state every 200 ms but is held ~0.7 s
+// by each TLS handshake, and handshakes are what drain the heap. This covers several of them
+// back to back, so a continuous heap stall keeps its clock.
+#define WS_HEAP_STALL_GAP_MS 5000
+
 // The largest wifi_status StatusMessage is 66 B: connected, a 32 B SSID, a negative RSSI
 // (10 B varint) and a 15 B address.
 #define WS_WIFI_FRAME_MAX 80
@@ -49,6 +60,16 @@ bool ws_state_blocked(int fd);
 void ws_state_close_failed(int fd);
 /** Test-and-clear of that retry flag: only one caller gets true. */
 bool ws_state_take_close_retry(int fd);
+/** A write to fd was skipped as not ready (heap: only for the TLS heap). Starts the stall clock
+ *  unless it runs; a heap skip WS_HEAP_STALL_GAP_MS after the previous skip restarts it. */
+void ws_state_write_skipped(int fd, TickType_t now, bool heap);
+/** A write to fd succeeded: the stall is over. */
+void ws_state_write_done(int fd);
+/** True if fd has been stalled for at least ticks. */
+bool ws_state_stalled_for(int fd, TickType_t now, TickType_t ticks);
+/** True once fd has been stalled for WS_STALL_CLOSE_MS. *heap: whether the last skip was for
+ *  the heap only. */
+bool ws_state_stall_expired(int fd, TickType_t now, bool* heap);
 
 struct ws_owed
 {

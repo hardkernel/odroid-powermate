@@ -58,6 +58,7 @@ typedef struct
     uint32_t websocket_close_retries;    // such closes retried
     uint32_t websocket_not_ready_skips;  // writes skipped (per client): the socket was not writable
     uint32_t websocket_heap_skips;       // HTTPS writes skipped (per client): no heap for the record
+    uint32_t websocket_stall_closes;     // sessions closed after 20 s of not being ready
 } websocket_diagnostics_t;
 
 void register_wifi_endpoint(httpd_handle_t server);

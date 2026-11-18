@@ -25,6 +25,10 @@ struct ws_fd_state
     uint32_t wifi_sent; // wifi_gen last written, 0 = none
     bool blocked;       // a write failed: its close was triggered, write nothing more
     bool close_retry;   // that close could not be queued: a state pass retries it
+    bool stalled;       // writes are being skipped (not ready) since stall_since
+    bool stall_heap;    // the last skip was for the TLS heap only
+    TickType_t stall_since;
+    TickType_t last_skip; // when the last write was skipped
 };
 
 static struct ws_fd_state fds[WS_FD_SLOTS];
@@ -112,6 +116,8 @@ void ws_state_session_opened(int fd)
     fds[i].wifi_sent = 0;
     fds[i].blocked = false;
     fds[i].close_retry = false;
+    fds[i].stalled = false;
+    fds[i].stall_heap = false;
     portEXIT_CRITICAL(&lock);
 }
 
@@ -166,6 +172,61 @@ bool ws_state_take_close_retry(int fd)
     fds[i].close_retry = false;
     portEXIT_CRITICAL(&lock);
     return retry;
+}
+
+void ws_state_write_skipped(int fd, TickType_t now, bool heap)
+{
+    int i;
+    if (!ws_state_slot(fd, &i))
+        return;
+    portENTER_CRITICAL(&lock);
+    // A heap skip after a gap in the skips starts a new stall. The shortage is global, so it says
+    // nothing about the gap, and the socket was writable (writability is checked first). A
+    // socket that is still not writable after a gap was not written, so it did not drain: that
+    // stall goes on.
+    if (!fds[i].stalled || (heap && now - fds[i].last_skip >= pdMS_TO_TICKS(WS_HEAP_STALL_GAP_MS)))
+    {
+        fds[i].stalled = true;
+        fds[i].stall_since = now;
+    }
+    fds[i].last_skip = now;
+    fds[i].stall_heap = heap;
+    portEXIT_CRITICAL(&lock);
+}
+
+void ws_state_write_done(int fd)
+{
+    int i;
+    if (!ws_state_slot(fd, &i))
+        return;
+    portENTER_CRITICAL(&lock);
+    fds[i].stalled = false;
+    portEXIT_CRITICAL(&lock);
+}
+
+bool ws_state_stalled_for(int fd, TickType_t now, TickType_t ticks)
+{
+    int i;
+    if (!ws_state_slot(fd, &i))
+        return false;
+    portENTER_CRITICAL(&lock);
+    bool stalled = fds[i].stalled && now - fds[i].stall_since >= ticks;
+    portEXIT_CRITICAL(&lock);
+    return stalled;
+}
+
+bool ws_state_stall_expired(int fd, TickType_t now, bool* heap)
+{
+    int i;
+    *heap = false;
+    if (!ws_state_slot(fd, &i))
+        return false;
+    portENTER_CRITICAL(&lock);
+    // Unsigned difference: wrap-safe, a stall is closed long before the tick count wraps.
+    bool expired = fds[i].stalled && now - fds[i].stall_since >= pdMS_TO_TICKS(WS_STALL_CLOSE_MS);
+    *heap = fds[i].stall_heap;
+    portEXIT_CRITICAL(&lock);
+    return expired;
 }
 
 bool ws_state_owed(int fd, struct ws_owed* o)

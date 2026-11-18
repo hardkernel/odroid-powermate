@@ -37,6 +37,8 @@
 #define UART_MIN_FREE_HEAP (48 * 1024)
 #define WS_LRU_UPDATE_INTERVAL_MS 1000
 #define WS_NOT_READY_REPOLL_MS 200 // a state pass has work left: run another after this
+#define WS_HEAP_CLOSE_GAP_MS 2000  // at most one close per this of sessions stalled for heap only
+#define WS_LRU_STALL_MS 5000       // a WebSocket unwritable and stalled this long loses its LRU refresh
 #define UART_TX_PIN CONFIG_GPIO_UART_TX
 #define UART_RX_PIN CONFIG_GPIO_UART_RX
 #define UART_DEFAULT_BAUD_RATE 1500000
@@ -129,6 +131,7 @@ static volatile uint32_t websocket_close_failures; // httpd_sess_trigger_close f
 static volatile uint32_t websocket_close_retries;  // closes re-triggered by a state pass
 static volatile uint32_t websocket_not_ready_skips; // writes skipped: the socket was not writable
 static volatile uint32_t websocket_heap_skips;      // HTTPS writes skipped: no heap for the TLS record
+static volatile uint32_t websocket_stall_closes;    // sessions closed after WS_STALL_CLOSE_MS not ready
 static bool ws_https; // webserver_is_https(), set by register_ws_endpoint
 // Status frame drops by cause. status_queue_drops keeps its meaning (queue full, or not
 // handed to httpd); these split it, and add the drops it never counted.
@@ -240,6 +243,8 @@ static esp_err_t ws_send_frame(httpd_handle_t server, int fd, uint8_t* data, siz
     esp_err_t err = httpd_ws_send_frame_async(server, fd, &frame);
     if (err != ESP_OK)
         ws_session_failed(server, fd, name, err);
+    else
+        ws_state_write_done(fd);
     return err;
 }
 
@@ -295,6 +300,43 @@ static void count_write_skip(ws_ready_t ready)
         websocket_not_ready_skips++;
 }
 
+static void stall_close(httpd_handle_t server, int fd, bool heap)
+{
+    websocket_stall_closes++;
+    ws_state_block(fd);
+    ESP_LOGW(TAG, "fd %d not ready for %d s (%s): closing it", fd, WS_STALL_CLOSE_MS / 1000,
+             heap ? "TLS heap" : "not writable");
+    ws_close_session(server, fd);
+}
+
+// A write to fd was skipped as not ready. A WebSocket that stays so for WS_STALL_CLOSE_MS is
+// closed: a socket that cannot take TCP_SNDLOWAT bytes in that time is dead in practice. A heap
+// shortage is global, so of the sessions stalled for heap only, one is closed per
+// WS_HEAP_CLOSE_GAP_MS: each close frees a TLS session (~4 KB), and the next pass re-checks.
+static void ws_write_skipped(httpd_handle_t server, int fd, ws_ready_t ready)
+{
+    // Heap stalls happen only over HTTPS, so these are used by the httpd task only.
+    static TickType_t last_heap_close;
+    static bool have_heap_close;
+    TickType_t now = xTaskGetTickCount();
+    bool heap;
+
+    count_write_skip(ready);
+    ws_state_write_skipped(fd, now, ready == WS_HEAP_SHORT);
+    if (!ws_state_stall_expired(fd, now, &heap))
+        return;
+    if (!heap)
+    {
+        stall_close(server, fd, false);
+    }
+    else if (!have_heap_close || now - last_heap_close >= pdMS_TO_TICKS(WS_HEAP_CLOSE_GAP_MS))
+    {
+        stall_close(server, fd, true);
+        last_heap_close = now;
+        have_heap_close = true;
+    }
+}
+
 typedef enum
 {
     WS_STATE_NONE,   // nothing was owed (or nothing could be encoded)
@@ -343,8 +385,10 @@ static ws_state_send_t ws_send_owed_state(httpd_handle_t server, int fd)
 // and UART streams almost never do, so a page load would close a live stream before an idle
 // keep-alive connection. The Wi-Fi status tick runs a state pass at least every 5 s, and the
 // pass (like every status frame) marks every live WebSocket, the UART ones included, as used
-// once a second. Called from one task in each mode: the status sender over HTTP, the httpd
-// task over HTTPS.
+// once a second. One whose writes have been skipped for WS_LRU_STALL_MS and that is still not
+// writable is not kept ahead of idle connections. Writability alone is no test: a busy console
+// is often unwritable for a moment, and a quiet one keeps the stall of its last skipped chunk.
+// Called from one task in each mode: the status sender over HTTP, the httpd task over HTTPS.
 static void ws_refresh_lru(httpd_handle_t server, const int* fds, size_t n)
 {
     static TickType_t last_lru_update;
@@ -357,7 +401,8 @@ static void ws_refresh_lru(httpd_handle_t server, const int* fds, size_t n)
         int fd = fds[i];
         void* ctx = httpd_sess_get_ctx(server, fd);
         if ((ctx == &status_ws_session || ctx == &uart_ws_session) && !ws_state_blocked(fd) &&
-            httpd_ws_get_fd_info(server, fd) == HTTPD_WS_CLIENT_WEBSOCKET)
+            httpd_ws_get_fd_info(server, fd) == HTTPD_WS_CLIENT_WEBSOCKET &&
+            (!ws_state_stalled_for(fd, now, pdMS_TO_TICKS(WS_LRU_STALL_MS)) || ws_fd_writable(fd)))
             httpd_sess_update_lru_counter(server, fd);
     }
     last_lru_update = now;
@@ -390,7 +435,7 @@ static void ws_broadcast(const struct ws_sender_config* config, const struct ws_
         if (ready != WS_READY)
         {
             // Lost for this client only. A status client's owed state stays owed.
-            count_write_skip(ready);
+            ws_write_skipped(server, fd, ready);
             if (config->uart_stream)
                 uart_queue_drops++;
             continue;
@@ -596,7 +641,7 @@ static uint32_t ws_state_pass(httpd_handle_t server)
         ws_ready_t ready = ws_write_ready(fd, ws_https, WS_TLS_WRITE_MIN_BLOCK);
         if (ready != WS_READY)
         {
-            count_write_skip(ready); // stays owed: try again soon
+            ws_write_skipped(server, fd, ready); // stays owed: try again soon
             owed++;
             repoll = min_nonzero(repoll, WS_NOT_READY_REPOLL_MS);
             continue;
@@ -1007,6 +1052,7 @@ void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics)
     diagnostics->websocket_close_retries = websocket_close_retries;
     diagnostics->websocket_not_ready_skips = websocket_not_ready_skips;
     diagnostics->websocket_heap_skips = websocket_heap_skips;
+    diagnostics->websocket_stall_closes = websocket_stall_closes;
     diagnostics->status_drops_queue_full = status_drops_queue_full;
     diagnostics->status_drops_https_pending = status_drops_https_pending;
     diagnostics->status_drops_ctrl_queue = status_drops_ctrl_queue;
