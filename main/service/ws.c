@@ -67,14 +67,14 @@
 
 #define WS_FRAME_HEADER_MAX 10         // httpd_ws.c: 2 B + 8 B extended length (server frames are not masked)
 #define WS_TLS_RECORD_OVERHEAD_MAX 128 // TLS 1.2 header + explicit IV + MAC + padding, upper bound
-// One readiness check covers at most sw_status + wifi_status + one status frame, each written as
-// header + payload (2 writes, 2 TLS records), or one UART chunk.
-#define WS_STATUS_WRITE_MAX                                                                         \
-    (3 * WS_FRAME_HEADER_MAX + 16 + WS_WIFI_FRAME_MAX + PB_BUFFER_SIZE + 6 * WS_TLS_RECORD_OVERHEAD_MAX)
+// One readiness check covers one status write (one httpd_socket_send of whole frames, so one TLS
+// record), or one UART chunk (header + payload, 2 writes, 2 TLS records).
+#define WS_BATCH_SIZE 384
+#define WS_STATUS_WRITE_MAX (WS_BATCH_SIZE + WS_TLS_RECORD_OVERHEAD_MAX) // 512
 #define WS_UART_WRITE_MAX (WS_FRAME_HEADER_MAX + BUF_SIZE + 2 * WS_TLS_RECORD_OVERHEAD_MAX)
 _Static_assert(WS_STATUS_WRITE_MAX < TCP_SNDLOWAT, "a status write after a readiness check could block");
 _Static_assert(WS_UART_WRITE_MAX < TCP_SNDLOWAT, "a UART write after a readiness check could block");
-// 6 writes (3 frames x 2) of at most one segment each, or 1 + ceil(2048 / MSS) for UART.
+// 2 segments for one status write, 1 + ceil(2048 / MSS) for UART.
 _Static_assert(TCP_SNDQUEUELOWAT - 1 + 6 <= TCP_SND_QUEUELEN, "the segment queue could fill after a check");
 _Static_assert(BUF_SIZE <= 2 * TCP_MSS, "a UART chunk is assumed to need at most 2 segments");
 
@@ -499,8 +499,12 @@ _Static_assert(PB_TAG_SENSOR == ((StatusMessage_sensor_data_tag << 3) | PB_WT_ST
 _Static_assert(PB_TAG_EVENT == ((StatusMessage_event_data_tag << 3) | PB_WT_STRING), "proto renumbered");
 _Static_assert(WS_EVENT_FRAME_MAX == PB_BUFFER_SIZE, "the event lane must take every send_pb_message frame");
 _Static_assert(SensorData_size < 128 && WS_SENSOR_FRAME_MAX == 2 + SensorData_size, "sensor frame size");
+_Static_assert(WS_WIFI_FRAME_MAX < 126, "wifi_status takes a 2-byte WebSocket header");
+#define WS_SW_FRAME_MAX 8      // sw_status is at most 6 B
 #define WS_MARKER_FRAME_MAX 80 // 77 B: 2a 4b | 08 01 | 10 +10 | 18 +10 | 22 31 + 49 chars
 #define WS_BATCHES_PER_FD 8    // writes per session and pass; a longer backlog gets another pass
+_Static_assert(WS_BATCH_SIZE >= 4 + WS_EVENT_FRAME_MAX, "a batch must hold the largest frame");
+_Static_assert(WS_BATCH_SIZE >= 2 + WS_MARKER_FRAME_MAX + 4 + WS_EVENT_FRAME_MAX, "marker + largest event");
 
 // What one write to a session carries, and what it moves once it was accepted whole.
 struct ws_batch_plan
@@ -521,7 +525,7 @@ struct ws_batch_plan
 };
 
 // The one writer of each mode only: the status sender over HTTP, the httpd task over HTTPS.
-static uint8_t status_frame[PB_BUFFER_SIZE];
+static uint8_t status_batch[WS_BATCH_SIZE];
 
 // The marker a session gets ahead of its events when it missed n of them: an EventData at
 // warning level, stamped now (the times of the lost events are unknown).
@@ -532,94 +536,165 @@ static size_t ws_encode_marker(uint8_t* buf, size_t size, uint32_t n)
     return encode_event(buf, size, EV_WARNING, text);
 }
 
-// One state frame: sw_status if owed, otherwise wifi_status. Returns its length, or 0.
-static size_t ws_build_state_frame(const struct ws_owed* owed, uint8_t* buf, size_t size, struct ws_batch_plan* plan)
+// A server WebSocket frame header (FIN, binary, unmasked) for a payload of len < 65536, as
+// httpd_ws_send_frame_async writes it. Returns its length: 2 below 126 B, else 4.
+static size_t ws_frame_header(uint8_t* h, size_t len)
 {
-    uint32_t gen;
-    size_t len;
-    if (owed->sw)
+    h[0] = 0x82;
+    if (len < 126)
     {
-        gen = ws_state_sw_gen();                    // the generation first,
-        len = encode_load_switch_status(buf, size); // then the outputs
-        if (len)
-        {
-            plan->sw = true;
-            plan->sw_gen = gen;
-        }
-        return len;
+        h[1] = (uint8_t)len;
+        return 2;
     }
-    len = ws_state_copy_wifi(buf, size, &gen); // bytes and generation as one pair
-    if (len)
-    {
-        plan->wifi = true;
-        plan->wifi_gen = gen;
-    }
-    return len;
+    h[1] = 126;
+    h[2] = (uint8_t)(len >> 8);
+    h[3] = (uint8_t)len;
+    return 4;
 }
 
-// The next StatusMessage the session on fd is owed, into buf. A new session (owed->snapshot)
-// gets its state first. Otherwise the order is: events (after a marker if some were missed),
-// then state, then sensor samples. Returns its length, or 0 when nothing can be written now:
-// the session ended or was replaced since the owed read, a producer evicted or overwrote what
-// the view held, or an event was stored after the view (the state then waits behind it).
-static size_t ws_build_frame(int fd, const struct ws_owed* owed, uint8_t* buf, size_t size, struct ws_batch_plan* plan)
+// Appends the view's events, after a marker if the session missed some. True if all went in.
+static bool ws_append_events(uint8_t* buf, size_t size, size_t* pos, struct ws_batch_plan* plan)
+{
+    const struct ws_lane_view* lane = &plan->lane;
+    if (lane->ev_missed)
+    {
+        if (size - *pos < 2 + WS_MARKER_FRAME_MAX)
+            return false;
+        size_t n = ws_encode_marker(buf + *pos + 2, WS_MARKER_FRAME_MAX, lane->ev_missed);
+        if (n == 0)
+            return false; // logged, cannot happen: nothing past the gap goes out uncounted
+        *pos += ws_frame_header(buf + *pos, n) + n;
+        plan->marker = true;
+    }
+    plan->ev_next = lane->ev_from;
+    for (uint32_t seq = lane->ev_from; seq != lane->ev_end; ++seq)
+    {
+        if (size - *pos < 4 + 1)
+            return false;
+        bool gone;
+        size_t n = ws_state_copy_event(seq, buf + *pos + 4, size - *pos - 4, &gone);
+        if (n == 0)
+            return false; // full, or evicted since the view (the next view counts it as missed)
+        if (n < 126)
+            memmove(buf + *pos + 2, buf + *pos + 4, n); // copied behind the longest header
+        *pos += ws_frame_header(buf + *pos, n) + n;
+        plan->ev_next = seq + 1;
+        plan->events++;
+    }
+    return true;
+}
+
+// Appends the owed state, sw_status then wifi_status, encoded or copied now. True if all of it
+// went in.
+static bool ws_append_state(uint8_t* buf, size_t size, size_t* pos, const struct ws_owed* owed,
+                            struct ws_batch_plan* plan)
+{
+    // The space checks come first, so the encoder never logs "stream full".
+    if (owed->sw)
+    {
+        if (size - *pos < 2 + WS_SW_FRAME_MAX)
+            return false;
+        uint32_t gen = ws_state_sw_gen();                                      // the generation first,
+        size_t n = encode_load_switch_status(buf + *pos + 2, WS_SW_FRAME_MAX); // then the outputs
+        if (n == 0)
+            return false; // cannot happen for 6 B; logged by the encoder
+        *pos += ws_frame_header(buf + *pos, n) + n;
+        plan->sw = true;
+        plan->sw_gen = gen;
+    }
+    if (owed->wifi)
+    {
+        if (size - *pos < 2 + WS_WIFI_FRAME_MAX)
+            return false;
+        uint32_t gen;
+        size_t n = ws_state_copy_wifi(buf + *pos + 2, WS_WIFI_FRAME_MAX, &gen); // bytes and generation as one pair
+        if (n)
+        {
+            *pos += ws_frame_header(buf + *pos, n) + n;
+            plan->wifi = true;
+            plan->wifi_gen = gen;
+        }
+    }
+    return true;
+}
+
+// Appends the view's sensor samples, oldest first, as many as fit.
+static void ws_append_sensors(uint8_t* buf, size_t size, size_t* pos, struct ws_batch_plan* plan)
+{
+    for (uint32_t s = plan->lane.sensor_from; s != plan->lane.sensor_end; ++s)
+    {
+        if (size - *pos < 2 + WS_SENSOR_FRAME_MAX)
+            return;
+        size_t n = ws_state_copy_sensor(s, buf + *pos + 2, WS_SENSOR_FRAME_MAX);
+        if (n == 0)
+        {
+            plan->sensor_merged++; // overwritten since the view
+        }
+        else
+        {
+            *pos += ws_frame_header(buf + *pos, n) + n;
+            plan->sensors++;
+        }
+        plan->sensor_next = s + 1;
+    }
+}
+
+// Builds the next write for the session on fd in buf: complete WebSocket frames, one
+// StatusMessage each, at most size bytes. A new session (owed->snapshot) gets its state first,
+// then its events and sensor samples. Otherwise: events (after a marker if some were missed),
+// then state, then sensor samples. Each part goes in only after the one before went in whole.
+// Returns the length, or 0 when nothing can be written now: the session ended or was replaced
+// since the owed read, a producer evicted or overwrote what the view held, or an event was
+// stored after the view while the state was read (the state then waits behind it).
+static size_t ws_build_batch(int fd, const struct ws_owed* owed, uint8_t* buf, size_t size, struct ws_batch_plan* plan)
 {
     *plan = (struct ws_batch_plan){.epoch = owed->epoch};
     plan->lane_ok = ws_state_lane_view(fd, &plan->lane) && plan->lane.epoch == owed->epoch;
     if (!plan->lane_ok)
         return 0; // not even owed state: the fd may hold another session by now
-    const struct ws_lane_view* lane = &plan->lane;
-    plan->ev_next = lane->ev_cursor;
-    plan->sensor_next = lane->sensor_from;
-    plan->sensor_merged = lane->sensor_merged;
+    plan->ev_next = plan->lane.ev_cursor;
+    plan->sensor_next = plan->lane.sensor_from;
+    plan->sensor_merged = plan->lane.sensor_merged;
+    size_t pos = 0;
     if (owed->snapshot)
-        return ws_build_state_frame(owed, buf, size, plan);
-    size_t len;
-    if (lane->ev_missed)
     {
-        len = ws_encode_marker(buf, size, lane->ev_missed);
-        if (len)
-        {
-            plan->marker = true;
-            plan->ev_next = lane->ev_from;
-        }
-        return len;
+        if (!ws_append_state(buf, size, &pos, owed, plan) || !ws_append_events(buf, size, &pos, plan))
+            return pos;
     }
-    if (lane->ev_from != lane->ev_end)
+    else
     {
-        bool gone;
-        len = ws_state_copy_event(lane->ev_from, buf, size, &gone); // 0: evicted since the view
-        if (len)
-        {
-            plan->ev_next = lane->ev_from + 1;
-            plan->events = 1;
-        }
-        return len;
-    }
-    if (owed->sw || owed->wifi)
-    {
-        len = ws_build_state_frame(owed, buf, size, plan);
+        if (!ws_append_events(buf, size, &pos, plan))
+            return pos;
+        size_t state_at = pos;
+        bool whole = ws_append_state(buf, size, &pos, owed, plan);
         // An event stored after the view may have been stored before the state was read (the
-        // warning task pushes "warning action", then cuts the outputs): it goes first.
-        if (len && ws_state_ev_head() != lane->ev_end)
+        // warning task pushes "warning action", then cuts the outputs): it goes first, and the
+        // state waits for the next write.
+        if ((plan->sw || plan->wifi) && ws_state_ev_head() != plan->lane.ev_end)
         {
             plan->sw = plan->wifi = false;
-            return 0;
+            return state_at;
         }
-        return len;
+        if (!whole)
+            return pos;
     }
-    for (uint32_t s = lane->sensor_from; s != lane->sensor_end; ++s)
+    ws_append_sensors(buf, size, &pos, plan);
+    return pos;
+}
+
+// One write: one send_fn call (httpd_txrx.c), so over HTTP one tcp_write and over HTTPS one TLS
+// record. After a readiness check it is taken whole or fails. A short or failed write closes
+// the session at once: a retry could let httpd's own frames (a pong) land inside the batch.
+static esp_err_t ws_send_batch(httpd_handle_t server, int fd, const uint8_t* buf, size_t len)
+{
+    int n = httpd_socket_send(server, fd, (const char*)buf, len, 0);
+    if (n < 0 || (size_t)n != len)
     {
-        plan->sensor_next = s + 1;
-        len = ws_state_copy_sensor(s, buf, size);
-        if (len)
-        {
-            plan->sensors = 1;
-            return len;
-        }
-        plan->sensor_merged++; // overwritten since the view
+        ws_session_failed(server, fd, status_sender.name, n < 0 ? ESP_FAIL : ESP_ERR_INVALID_SIZE);
+        return ESP_FAIL;
     }
-    return 0;
+    ws_state_write_done(fd); // the stall is over
+    return ESP_OK;
 }
 
 // The write that plan describes was accepted whole: move the cursors and mark the state. All of
@@ -648,19 +723,16 @@ typedef enum
     WS_SEND_MORE,      // WS_BATCHES_PER_FD writes went out and more is owed
 } ws_send_t;
 
-// Writes the session on fd what it is owed, one readiness check per write. Called only by the
-// one writer of the current mode, for an fd whose ctx is its /ws context (ws_state_ctx), not
-// blocked, and a WebSocket.
+// Writes the session on fd what it is owed, packed into writes of at most WS_BATCH_SIZE, one
+// readiness check per write. Called only by the one writer of the current mode, for an fd
+// whose ctx is its /ws context (ws_state_ctx), not blocked, and a WebSocket.
 static ws_send_t ws_send_owed(httpd_handle_t server, int fd)
 {
-    bool snapshot = false; // a new session's sw_status and wifi_status go out ahead of the rest
     for (int b = 0; b < WS_BATCHES_PER_FD; ++b)
     {
         struct ws_owed owed;
         if (!ws_state_owed(fd, &owed))
             return WS_SEND_DONE;
-        snapshot = (snapshot || owed.snapshot) && (owed.sw || owed.wifi);
-        owed.snapshot = snapshot;
         ws_ready_t ready = ws_write_ready(fd, ws_https, WS_TLS_WRITE_MIN_BLOCK);
         if (ready != WS_READY)
         {
@@ -668,11 +740,11 @@ static ws_send_t ws_send_owed(httpd_handle_t server, int fd)
             return WS_SEND_NOT_READY;
         }
         struct ws_batch_plan plan;
-        size_t len = ws_build_frame(fd, &owed, status_frame, sizeof(status_frame), &plan);
+        size_t len = ws_build_batch(fd, &owed, status_batch, sizeof(status_batch), &plan);
         if (len == 0)
             return WS_SEND_NOT_READY; // nothing written: the 200 ms re-poll, or the producer's
                                       // request, runs the next pass. Never spins.
-        if (ws_send_frame(server, fd, status_frame, len, status_sender.name) != ESP_OK)
+        if (ws_send_batch(server, fd, status_batch, len) != ESP_OK)
             return WS_SEND_FAILED; // its free_ctx counts what it did not get
         ws_commit_batch(fd, &plan);
     }
