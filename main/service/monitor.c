@@ -14,6 +14,7 @@
 #include <sys/time.h>
 #include <time.h>
 #include "climit.h"
+#include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
@@ -45,6 +46,7 @@ static const char* TAG = "monitor";
 
 static esp_timer_handle_t sensor_timer;
 static esp_timer_handle_t wifi_status_timer;
+static esp_timer_handle_t wifi_status_now_timer; // one-shot: publish the Wi-Fi state now
 static esp_timer_handle_t long_press_timer;
 // static esp_timer_handle_t shutdown_load_sw; // No longer needed
 
@@ -542,6 +544,23 @@ static void status_wifi_callback(void* arg)
         ws_publish_wifi_status(buf, len);
 }
 
+// Publishes the Wi-Fi state from the esp_timer task, where the 5 s tick runs too, so a stale
+// read can never be stored after a newer one. An armed run reads the state when it runs.
+static void publish_wifi_status_now(void)
+{
+    esp_err_t err = esp_timer_start_once(wifi_status_now_timer, 0);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
+        ESP_LOGW(TAG, "Wi-Fi status refresh not started: %s", esp_err_to_name(err));
+}
+
+// The station got its address: publish the connected state now, not at the next tick, since
+// a client can reach the device from now on. wifi.c registered its handler first, so it has
+// already marked the station connected when this runs.
+static void wifi_got_ip_handler(void* arg, esp_event_base_t base, int32_t id, void* data)
+{
+    publish_wifi_status_now();
+}
+
 // Placeholder for long press action
 static void handle_critical_long_press(void)
 {
@@ -815,11 +834,14 @@ void init_status_monitor()
     const esp_timer_create_args_t sensor_timer_args = {.callback = &sensor_timer_callback,
                                                        .name = "sensor_reading_timer"};
     const esp_timer_create_args_t wifi_timer_args = {.callback = &status_wifi_callback, .name = "wifi_status_timer"};
+    const esp_timer_create_args_t wifi_now_timer_args = {.callback = &status_wifi_callback,
+                                                         .name = "wifi_status_now"};
     const esp_timer_create_args_t long_press_timer_args = {.callback = &long_press_timer_callback,
                                                            .name = "long_press_timer"};
 
     ESP_ERROR_CHECK(esp_timer_create(&sensor_timer_args, &sensor_timer));
     ESP_ERROR_CHECK(esp_timer_create(&wifi_timer_args, &wifi_status_timer));
+    ESP_ERROR_CHECK(esp_timer_create(&wifi_now_timer_args, &wifi_status_now_timer));
     ESP_ERROR_CHECK(esp_timer_create(&long_press_timer_args, &long_press_timer));
 
     xTaskCreate(shutdown_load_sw_task, "shutdown_sw_task", configMINIMAL_STACK_SIZE * 3, NULL, 15,
@@ -852,6 +874,12 @@ void init_status_monitor()
 
     nconfig_read(SENSOR_PERIOD_MS, buf, sizeof(buf));
     ESP_ERROR_CHECK(esp_timer_start_periodic(sensor_timer, strtol(buf, NULL, 10) * 1000));
+    // The Wi-Fi state is known from boot, so the first /ws snapshot includes it, and it is
+    // published again as soon as the station gets an address. Without the handler the state
+    // still follows within the 5 s tick.
+    if (esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_got_ip_handler, NULL) != ESP_OK)
+        ESP_LOGW(TAG, "Wi-Fi status: no refresh on a new address");
+    publish_wifi_status_now();
     ESP_ERROR_CHECK(esp_timer_start_periodic(wifi_status_timer, 1000000 * 5));
 }
 

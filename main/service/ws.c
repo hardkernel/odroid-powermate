@@ -37,6 +37,13 @@
 #define UART_RX_PIN CONFIG_GPIO_UART_RX
 #define UART_DEFAULT_BAUD_RATE 1500000
 
+// The /ws snapshot is requested from the post-handshake callback. sdkconfig.defaults does not
+// override a value set in an existing sdkconfig, and without the option httpd_uri_t has no
+// ws_post_handshake_cb.
+#if !CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
+#error "sdkconfig predates CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT in sdkconfig.defaults: delete sdkconfig and rebuild"
+#endif
+
 static const char* TAG = "ws-uart";
 
 // Keep in sync with the baud rate lists in page/index.html and example/pmtui/uart_menu.go.
@@ -255,6 +262,10 @@ static void ws_broadcast(const struct ws_sender_config* config, const struct ws_
         if (httpd_sess_get_ctx(server, fd) != stream || ws_state_blocked(fd) ||
             httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
             continue;
+        // State before any other frame: a new session gets its snapshot first, even if this
+        // frame was queued before the state pass, and a change goes out with the next frame.
+        if (!config->uart_stream && ws_send_owed_state(server, fd) == WS_STATE_FAILED)
+            continue;
         ws_send_frame(server, fd, msg->data, msg->len, config->name);
     }
 }
@@ -422,7 +433,10 @@ static uint32_t ws_state_pass(httpd_handle_t server)
             continue;
         if (httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
             continue; // not upgraded yet, or closing (the client sent CLOSE)
-        ws_send_owed_state(server, fd); // FAILED: the session is already being closed
+        // FAILED: the session is blocked and already being closed.
+        struct ws_owed left;
+        if (ws_send_owed_state(server, fd) != WS_STATE_FAILED && ws_state_owed(fd, &left))
+            owed++;
     }
     state_owed = owed;
     return 0;
@@ -655,6 +669,17 @@ static esp_err_t ws_pre_handshake_cb(httpd_req_t* req)
     return websocket_handshake(req, req->user_ctx == &uart_ws_session, true);
 }
 
+// /ws only, in the httpd task right after ws_handshake_done is set: any pass from now on sees
+// this fd as a WebSocket, and the session gets sw_status and wifi_status first. httpd fails
+// the request unless this returns ESP_OK.
+static esp_err_t ws_post_handshake_cb(httpd_req_t* req)
+{
+    (void)req;
+    ws_state_request_pass();
+    wake_status_sender();
+    return ESP_OK;
+}
+
 static esp_err_t ws_handler(httpd_req_t* req)
 {
     if (req->method == HTTP_GET)
@@ -732,6 +757,7 @@ void register_ws_endpoint(httpd_handle_t server)
         .user_ctx = &status_ws_session,
         .is_websocket = true,
         .ws_pre_handshake_cb = ws_pre_handshake_cb,
+        .ws_post_handshake_cb = ws_post_handshake_cb,
     };
     httpd_uri_t uart_ws = {
         .uri = "/uart",
