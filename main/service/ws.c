@@ -17,11 +17,14 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/task.h"
 #include "nconfig.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include "string.h"
+#include "sw.h"
 #include "webserver.h"
+#include "ws_state.h"
 
 #define UART_NUM UART_NUM_1
 #define BUF_SIZE 2048
@@ -57,6 +60,10 @@ struct ws_sender_config
 };
 
 #define MAX_CLIENT POWERMATE_HTTP_MAX_OPEN_SOCKETS
+// Every httpd session is an lwIP socket, and the per-fd state table (ws_state.c) has one slot
+// per lwIP socket, so it covers every session.
+_Static_assert(POWERMATE_HTTP_MAX_OPEN_SOCKETS + 3 <= CONFIG_LWIP_MAX_SOCKETS,
+               "CONFIG_LWIP_MAX_SOCKETS too small for POWERMATE_HTTP_MAX_OPEN_SOCKETS: delete sdkconfig and rebuild");
 static QueueHandle_t status_ws_queue;
 static QueueHandle_t uart_ws_queue;
 static QueueHandle_t uart_event_queue;
@@ -76,7 +83,12 @@ static volatile uint32_t status_drops_no_memory;     // the frame copy or the ht
 static volatile uint32_t status_drops_ctrl_queue;    // HTTPS: httpd_queue_work failed
 static volatile uint32_t status_drops_no_client;     // sw_status or event frame, no /ws registered
 static volatile uint32_t status_sw_drops;            // sw_status frames dropped with a /ws registered
-static int blocked_ws_fds[MAX_CLIENT];
+// Switch and Wi-Fi state frames, which never go through the status queue (see ws_state.h).
+static volatile uint32_t state_frames;        // state frames written
+static volatile uint32_t state_owed;          // gauge: /ws sessions still owed state after the last pass
+static volatile uint32_t state_kick_failures; // HTTPS: queuing the state pass failed (retried)
+static volatile uint32_t state_kick_rearms;   // HTTPS: a queued state pass never ran, kicked again
+static TaskHandle_t volatile status_sender_task; // NULL until register_ws_endpoint created it
 static uint8_t status_ws_session;
 static uint8_t uart_ws_session;
 
@@ -95,65 +107,6 @@ static void websocket_session_ctx_free(void* ctx)
 {
 }
 
-static bool fd_in_list(const int* fds, int fd)
-{
-    for (size_t i = 0; i < MAX_CLIENT; ++i)
-    {
-        if (fds[i] == fd)
-            return true;
-    }
-    return false;
-}
-
-static void add_fd_to_list(int* fds, int fd)
-{
-    for (size_t i = 0; i < MAX_CLIENT; ++i)
-    {
-        if (fds[i] == fd)
-            return;
-        if (fds[i] == 0)
-        {
-            fds[i] = fd;
-            return;
-        }
-    }
-}
-
-static void remove_fd_from_list(int* fds, int fd)
-{
-    for (size_t i = 0; i < MAX_CLIENT; ++i)
-    {
-        if (fds[i] == fd)
-            fds[i] = 0;
-    }
-}
-
-static void cleanup_fd_list(int* fds, const int* client_fds, size_t clients)
-{
-    for (size_t i = 0; i < MAX_CLIENT; ++i)
-    {
-        if (fds[i] == 0)
-            continue;
-
-        bool still_connected = false;
-        for (size_t j = 0; j < clients; ++j)
-        {
-            if (fds[i] == client_fds[j])
-            {
-                still_connected = true;
-                break;
-            }
-        }
-        if (!still_connected)
-            fds[i] = 0;
-    }
-}
-
-static void cleanup_client_fds(const int* client_fds, size_t clients)
-{
-    cleanup_fd_list(blocked_ws_fds, client_fds, clients);
-}
-
 static bool uart_websocket_client_connected(httpd_handle_t server)
 {
     int client_fds[MAX_CLIENT];
@@ -162,10 +115,9 @@ static bool uart_websocket_client_connected(httpd_handle_t server)
     if (httpd_get_client_list(server, &clients, client_fds) != ESP_OK)
         return false;
 
-    cleanup_client_fds(client_fds, clients);
     for (size_t i = 0; i < clients; ++i)
     {
-        if (httpd_sess_get_ctx(server, client_fds[i]) == &uart_ws_session && !fd_in_list(blocked_ws_fds, client_fds[i]) &&
+        if (httpd_sess_get_ctx(server, client_fds[i]) == &uart_ws_session && !ws_state_blocked(client_fds[i]) &&
             httpd_ws_get_fd_info(server, client_fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET)
             return true;
     }
@@ -181,10 +133,9 @@ static bool status_websocket_client_connected(httpd_handle_t server)
     if (httpd_get_client_list(server, &clients, client_fds) != ESP_OK)
         return false;
 
-    cleanup_client_fds(client_fds, clients);
     for (size_t i = 0; i < clients; ++i)
     {
-        if (httpd_sess_get_ctx(server, client_fds[i]) == &status_ws_session && !fd_in_list(blocked_ws_fds, client_fds[i]) &&
+        if (httpd_sess_get_ctx(server, client_fds[i]) == &status_ws_session && !ws_state_blocked(client_fds[i]) &&
             httpd_ws_get_fd_info(server, client_fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET)
             return true;
     }
@@ -192,58 +143,120 @@ static bool status_websocket_client_connected(httpd_handle_t server)
     return false;
 }
 
+// A write failed: write nothing more to this session and close it. The blocked flag is set
+// before the close is triggered, so no task sees the session as writable again until a new
+// WebSocket handshake on its fd.
+static void ws_session_failed(httpd_handle_t server, int fd, const char* name, esp_err_t err)
+{
+    websocket_send_failures++;
+    ws_state_block(fd);
+    ESP_LOGW(TAG, "%s: send failed for fd %d: %s", name, fd, esp_err_to_name(err));
+    httpd_sess_trigger_close(server, fd);
+}
+
+static esp_err_t ws_send_frame(httpd_handle_t server, int fd, uint8_t* data, size_t len, const char* name)
+{
+    httpd_ws_frame_t frame = {
+        .payload = data,
+        .len = len,
+        .type = HTTPD_WS_TYPE_BINARY,
+    };
+    esp_err_t err = httpd_ws_send_frame_async(server, fd, &frame);
+    if (err != ESP_OK)
+        ws_session_failed(server, fd, name, err);
+    return err;
+}
+
+typedef enum
+{
+    WS_STATE_NONE,   // nothing was owed (or nothing could be encoded)
+    WS_STATE_SENT,   // the owed state was written
+    WS_STATE_FAILED, // a write failed: the session is blocked and being closed
+} ws_state_send_t;
+
+// Writes the state this session is owed, sw_status first, then wifi_status. Called only by the
+// one writer of the current mode, for an fd whose ctx is &status_ws_session, not blocked, and
+// a WebSocket.
+static ws_state_send_t ws_send_owed_state(httpd_handle_t server, int fd)
+{
+    struct ws_owed owed;
+    if (!ws_state_owed(fd, &owed))
+        return WS_STATE_NONE;
+    if (owed.sw)
+    {
+        uint8_t buf[16];
+        uint32_t gen = ws_state_sw_gen();                         // the generation first,
+        size_t len = encode_load_switch_status(buf, sizeof(buf)); // then the outputs
+        if (len == 0)
+            return WS_STATE_NONE; // cannot happen for 6 B; logged by the encoder
+        if (ws_send_frame(server, fd, buf, len, status_sender.name) != ESP_OK)
+            return WS_STATE_FAILED;
+        ws_state_mark_sw(fd, owed.epoch, gen); // never a generation read after the outputs
+        state_frames++;
+    }
+    if (owed.wifi)
+    {
+        uint8_t buf[WS_WIFI_FRAME_MAX];
+        uint32_t gen;
+        size_t len = ws_state_copy_wifi(buf, sizeof(buf), &gen); // bytes and generation as one pair
+        if (len)
+        {
+            if (ws_send_frame(server, fd, buf, len, status_sender.name) != ESP_OK)
+                return WS_STATE_FAILED;
+            ws_state_mark_wifi(fd, owed.epoch, gen);
+            state_frames++;
+        }
+    }
+    return WS_STATE_SENT;
+}
+
+// httpd closes the least recently used session when a new connection arrives and all are
+// taken. A WebSocket only counts as used when the client sends something, which the status
+// and UART streams almost never do, so a page load would close a live stream before an idle
+// keep-alive connection. The Wi-Fi status tick runs a state pass at least every 5 s, and the
+// pass (like every status frame) marks every live WebSocket, the UART ones included, as used
+// once a second. Called from one task in each mode: the status sender over HTTP, the httpd
+// task over HTTPS.
+static void ws_refresh_lru(httpd_handle_t server, const int* fds, size_t n)
+{
+    static TickType_t last_lru_update;
+    TickType_t now = xTaskGetTickCount();
+    if (last_lru_update != 0 && now - last_lru_update < pdMS_TO_TICKS(WS_LRU_UPDATE_INTERVAL_MS))
+        return;
+
+    for (size_t i = 0; i < n; ++i)
+    {
+        int fd = fds[i];
+        void* ctx = httpd_sess_get_ctx(server, fd);
+        if ((ctx == &status_ws_session || ctx == &uart_ws_session) && !ws_state_blocked(fd) &&
+            httpd_ws_get_fd_info(server, fd) == HTTPD_WS_CLIENT_WEBSOCKET)
+            httpd_sess_update_lru_counter(server, fd);
+    }
+    last_lru_update = now;
+}
+
 /** Sends one message to every WebSocket of the sender's stream. */
 static void ws_broadcast(const struct ws_sender_config* config, const struct ws_message* msg)
 {
     // Used from one task per stream: the sender in HTTP mode, the httpd task in HTTPS mode.
-    static TickType_t last_lru_update;
     httpd_handle_t server = config->server;
     int client_fds[MAX_CLIENT];
     size_t clients = MAX_CLIENT;
     if (httpd_get_client_list(server, &clients, client_fds) != ESP_OK)
         return;
 
-    // httpd closes the least recently used session when a new connection arrives
-    // and all are taken. A WebSocket only counts as used when the client sends
-    // something, which the status and UART streams almost never do, so a page load
-    // would close a live stream before an idle keep-alive connection. The status
-    // stream sends at least every 5 s (Wi-Fi status), so it marks every live
-    // WebSocket, the UART ones included, as used once a second.
-    TickType_t now = xTaskGetTickCount();
-    bool update_lru = !config->uart_stream &&
-        (last_lru_update == 0 || now - last_lru_update >= pdMS_TO_TICKS(WS_LRU_UPDATE_INTERVAL_MS));
+    if (!config->uart_stream)
+        ws_refresh_lru(server, client_fds, clients);
 
-    cleanup_client_fds(client_fds, clients);
-
-    httpd_ws_frame_t frame = {
-        .payload = msg->data,
-        .len = msg->len,
-        .type = HTTPD_WS_TYPE_BINARY,
-    };
-
+    void* stream = config->uart_stream ? (void*)&uart_ws_session : (void*)&status_ws_session;
     for (size_t i = 0; i < clients; ++i)
     {
         int fd = client_fds[i];
-        void* ctx = httpd_sess_get_ctx(server, fd);
-        bool websocket = (ctx == &status_ws_session || ctx == &uart_ws_session) &&
-            !fd_in_list(blocked_ws_fds, fd) && httpd_ws_get_fd_info(server, fd) == HTTPD_WS_CLIENT_WEBSOCKET;
-        if (websocket && update_lru)
-            httpd_sess_update_lru_counter(server, fd);
-        if (!websocket || ctx != (config->uart_stream ? (void*)&uart_ws_session : (void*)&status_ws_session))
+        if (httpd_sess_get_ctx(server, fd) != stream || ws_state_blocked(fd) ||
+            httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
             continue;
-
-        esp_err_t err = httpd_ws_send_frame_async(server, fd, &frame);
-        if (err != ESP_OK)
-        {
-            websocket_send_failures++;
-            add_fd_to_list(blocked_ws_fds, fd);
-            ESP_LOGW(TAG, "%s: send failed for fd %d: %s", config->name, fd, esp_err_to_name(err));
-            httpd_sess_trigger_close(server, fd);
-        }
+        ws_send_frame(server, fd, msg->data, msg->len, config->name);
     }
-
-    if (update_lru)
-        last_lru_update = now;
 }
 
 // HTTPS: a TLS session must not be written by one task while httpd reads it in another,
@@ -297,6 +310,34 @@ static ws_queue_result_t ws_queue_to_httpd(struct ws_sender_config* config, stru
     return result;
 }
 
+// Sends one dequeued frame (HTTP) or hands it to the httpd task (HTTPS), and frees it.
+static void ws_sender_handle(struct ws_sender_config* config, struct ws_message* msg, bool https)
+{
+    if (!https)
+    {
+        ws_broadcast(config, msg);
+        free(msg->data);
+        return;
+    }
+    ws_queue_result_t result = ws_queue_to_httpd(config, msg);
+    if (result == WS_QUEUED)
+        return;
+    if (config->uart_stream)
+    {
+        uart_queue_drops++;
+    }
+    else
+    {
+        status_queue_drops++;
+        count_status_drop(msg->data, msg->len,
+                          result == WS_PENDING_FULL ? &status_drops_https_pending
+                          : result == WS_NO_MEMORY  ? &status_drops_no_memory
+                                                    : &status_drops_ctrl_queue);
+    }
+    free(msg->data);
+}
+
+// The UART stream's sender.
 static void ws_sender_task(void* arg)
 {
     struct ws_sender_config* config = arg;
@@ -315,29 +356,188 @@ static void ws_sender_task(void* arg)
             continue;
         }
 
-        if (!https)
+        ws_sender_handle(config, &msg, https);
+    }
+}
+
+// ---- Switch and Wi-Fi state ------------------------------------------------------------
+// sw_status and wifi_status are latest values (ws_state.c), never queued frames, so none of
+// the queue's drop points can lose them. A state pass writes every /ws session the state it
+// is owed, encoded when its frame is written. One task writes state frames and marks in each
+// mode: the status sender over HTTP, the httpd task over HTTPS (one work item, kicked by the
+// sender).
+
+#define WS_KICK_RETRY_MS 20    // HTTPS: queuing the state pass failed, try again after this
+#define WS_KICK_REARM_MS 10000 // HTTPS: a queued state pass has not run: its datagram was lost
+
+static void wake_status_sender(void)
+{
+    TaskHandle_t task = status_sender_task;
+    if (task)
+        xTaskNotifyGive(task);
+}
+
+void ws_publish_switch_state(void)
+{
+    ws_state_bump_sw();
+    ws_state_request_pass();
+    wake_status_sender();
+}
+
+void ws_publish_wifi_status(const uint8_t* frame, size_t len)
+{
+    if (!ws_state_store_wifi(frame, len))
+    {
+        ESP_LOGW(TAG, "wifi status frame of %u B not stored", (unsigned)len);
+        return;
+    }
+    ws_state_request_pass();
+    wake_status_sender();
+}
+
+// Writes every registered /ws session the state it is owed. Returns the re-poll interval in ms
+// (0: none). Runs in the status sender over HTTP, in the httpd task over HTTPS.
+static uint32_t ws_state_pass(httpd_handle_t server)
+{
+    int client_fds[MAX_CLIENT];
+    size_t clients = MAX_CLIENT;
+    if (httpd_get_client_list(server, &clients, client_fds) != ESP_OK)
+        return 0;
+
+    ws_refresh_lru(server, client_fds, clients);
+    unsigned owed = 0;
+    for (size_t i = 0; i < clients; ++i)
+    {
+        int fd = client_fds[i];
+        if (!ws_state_slot(fd, NULL))
         {
-            ws_broadcast(config, &msg);
-            free(msg.data);
+            // lwIP hands out no such fd. It is never written (it reads as blocked).
+            static bool logged;
+            if (!logged)
+                ESP_LOGE(TAG, "fd %d is outside the WebSocket state table", fd);
+            logged = true;
             continue;
         }
-        ws_queue_result_t result = ws_queue_to_httpd(config, &msg);
-        if (result != WS_QUEUED)
+        if (httpd_sess_get_ctx(server, fd) != &status_ws_session || ws_state_blocked(fd))
+            continue;
+        if (httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
+            continue; // not upgraded yet, or closing (the client sent CLOSE)
+        ws_send_owed_state(server, fd); // FAILED: the session is already being closed
+    }
+    state_owed = owed;
+    return 0;
+}
+
+// HTTPS: the state pass, in the httpd task. Static and without an argument, so a duplicate is
+// harmless.
+static void ws_state_work(void* arg)
+{
+    (void)arg;
+    ws_state_pass_started(); // first: a request from now on needs a new kick
+    ws_state_report_pass(ws_state_pass(status_sender.server));
+    wake_status_sender();
+}
+
+static bool queue_state_work(void* server)
+{
+    return httpd_queue_work(server, ws_state_work, NULL) == ESP_OK;
+}
+
+// Wrap-safe: deadlines are at most WS_KICK_REARM_MS ahead.
+static bool due(TickType_t now, TickType_t at)
+{
+    return (int32_t)(now - at) >= 0;
+}
+
+static TickType_t ticks_until(TickType_t now, TickType_t at)
+{
+    return due(now, at) ? 0 : at - now;
+}
+
+static TickType_t min_ticks(TickType_t a, TickType_t b)
+{
+    return a < b ? a : b;
+}
+
+// The status stream's sender: the state step (a pass over HTTP, a kick over HTTPS), then the
+// queued event and sensor frames. Woken by task notifications from the publishers,
+// push_data_to_ws and the state work item.
+static void ws_status_sender_task(void* arg)
+{
+    struct ws_sender_config* config = arg;
+    const bool https = webserver_is_https();
+    bool repoll = false; // run a pass (HTTP) or kick one (HTTPS) at repoll_at
+    TickType_t repoll_at = 0;
+    bool kick_retry = false; // HTTPS: queuing failed, kick again at kick_retry_at
+    TickType_t kick_retry_at = 0;
+    TickType_t kicked_at = 0; // HTTPS: when the outstanding kick was queued
+    struct ws_message msg;
+
+    for (;;)
+    {
+        TickType_t now = xTaskGetTickCount();
+        TickType_t wait = portMAX_DELAY;
+        if (repoll)
+            wait = min_ticks(wait, ticks_until(now, repoll_at));
+        if (kick_retry)
+            wait = min_ticks(wait, ticks_until(now, kick_retry_at));
+        if (https && ws_state_kick_outstanding())
+            wait = min_ticks(wait, ticks_until(now, kicked_at + pdMS_TO_TICKS(WS_KICK_REARM_MS)));
+        ulTaskNotifyTake(pdTRUE, wait);
+        now = xTaskGetTickCount();
+
+        bool need = ws_state_take_pass_request();
+        uint32_t ms;
+        if (https && ws_state_take_report(&ms))
         {
-            if (config->uart_stream)
-            {
-                uart_queue_drops++;
-            }
-            else
-            {
-                status_queue_drops++;
-                count_status_drop(msg.data, msg.len,
-                                  result == WS_PENDING_FULL ? &status_drops_https_pending
-                                  : result == WS_NO_MEMORY  ? &status_drops_no_memory
-                                                            : &status_drops_ctrl_queue);
-            }
-            free(msg.data);
+            repoll = ms != 0;
+            repoll_at = now + pdMS_TO_TICKS(ms);
         }
+        if (repoll && due(now, repoll_at))
+        {
+            repoll = false;
+            need = true;
+        }
+        if (https)
+        {
+            if (ws_state_kick_outstanding() && now - kicked_at >= pdMS_TO_TICKS(WS_KICK_REARM_MS))
+            {
+                state_kick_rearms++; // its control datagram was lost
+                ws_state_kick_reset();
+                need = true;
+            }
+            if (kick_retry && due(now, kick_retry_at))
+            {
+                kick_retry = false;
+                need = true;
+            }
+            if (need)
+            {
+                switch (ws_state_kick(queue_state_work, config->server))
+                {
+                case WS_KICK_QUEUED:
+                    kicked_at = now;
+                    break;
+                case WS_KICK_OUTSTANDING:
+                    break; // the queued pass has not started: it reads the new state
+                case WS_KICK_FAILED:
+                    state_kick_failures++;
+                    kick_retry = true;
+                    kick_retry_at = now + pdMS_TO_TICKS(WS_KICK_RETRY_MS);
+                    break;
+                }
+            }
+        }
+        else if (need)
+        {
+            ms = ws_state_pass(config->server);
+            repoll = ms != 0;
+            repoll_at = now + pdMS_TO_TICKS(ms);
+        }
+
+        // Frames after the state step, so that a kick goes ahead of them in httpd's queue.
+        while (xQueueReceive(config->queue, &msg, 0) == pdPASS)
+            ws_sender_handle(config, &msg, https);
     }
 }
 
@@ -417,7 +617,8 @@ static void uart_event_task(void* arg)
     }
 }
 
-static esp_err_t websocket_handshake(httpd_req_t* req, bool uart_stream)
+// upgrade: the WebSocket handshake (pre-handshake callback); otherwise a plain GET of the URI.
+static esp_err_t websocket_handshake(httpd_req_t* req, bool uart_stream, bool upgrade)
 {
     size_t query_len = httpd_req_get_url_query_len(req) + 1;
     if (query_len <= 1)
@@ -438,7 +639,11 @@ static esp_err_t websocket_handshake(httpd_req_t* req, bool uart_stream)
     free(query);
 
     int fd = httpd_req_to_sockfd(req);
-    remove_fd_from_list(blocked_ws_fds, fd);
+    // A new WebSocket session on this fd: everything the previous one left is reset at once.
+    if (upgrade)
+        ws_state_session_opened(fd);
+    else
+        ws_state_unblock(fd);
     req->sess_ctx = uart_stream ? (void*)&uart_ws_session : (void*)&status_ws_session;
     req->free_ctx = websocket_session_ctx_free;
 
@@ -447,13 +652,13 @@ static esp_err_t websocket_handshake(httpd_req_t* req, bool uart_stream)
 
 static esp_err_t ws_pre_handshake_cb(httpd_req_t* req)
 {
-    return websocket_handshake(req, req->user_ctx == &uart_ws_session);
+    return websocket_handshake(req, req->user_ctx == &uart_ws_session, true);
 }
 
 static esp_err_t ws_handler(httpd_req_t* req)
 {
     if (req->method == HTTP_GET)
-        return websocket_handshake(req, false);
+        return websocket_handshake(req, false, false);
 
     httpd_ws_frame_t frame = {0};
     uint8_t buffer[BUF_SIZE];
@@ -474,7 +679,7 @@ static esp_err_t ws_handler(httpd_req_t* req)
 static esp_err_t uart_ws_handler(httpd_req_t* req)
 {
     if (req->method == HTTP_GET)
-        return websocket_handshake(req, true);
+        return websocket_handshake(req, true, false);
 
     httpd_ws_frame_t frame = {0};
     uint8_t buffer[BUF_SIZE];
@@ -549,7 +754,9 @@ void register_ws_endpoint(httpd_handle_t server)
     // streams and an SBC boot log were running and send failures were logged
     // (sender ~1.7 KB, polling ~0.7 KB).
     xTaskCreate(uart_polling_task, "uart_polling_task", 1024 * 3, server, 8, NULL);
-    xTaskCreate(ws_sender_task, "ws_status_sender", 1024 * 3, &status_sender, 9, NULL);
+    TaskHandle_t task = NULL;
+    xTaskCreate(ws_status_sender_task, "ws_status_sender", 1024 * 3, &status_sender, 9, &task);
+    status_sender_task = task;
     xTaskCreate(ws_sender_task, "ws_uart_sender", 1024 * 3, &uart_sender, 9, NULL);
     xTaskCreate(uart_event_task, "uart_event_task", 1024 * 2, NULL, 10, NULL);
 }
@@ -577,7 +784,9 @@ void push_data_to_ws(const uint8_t* data, size_t len)
         status_queue_drops++;
         count_status_drop(msg.data, msg.len, &status_drops_queue_full);
         free(msg.data);
+        return;
     }
+    wake_status_sender();
 }
 
 void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics)
@@ -608,6 +817,10 @@ void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics)
     diagnostics->status_sw_drops = status_sw_drops;
     diagnostics->status_https_pending = atomic_load(&status_sender.pending);
     diagnostics->uart_https_pending = atomic_load(&uart_sender.pending);
+    diagnostics->status_state_frames = state_frames;
+    diagnostics->status_state_owed = state_owed;
+    diagnostics->status_state_kick_failures = state_kick_failures;
+    diagnostics->status_state_kick_rearms = state_kick_rearms;
 }
 
 bool uart_baud_rate_is_supported(long baud_rate)

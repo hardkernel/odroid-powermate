@@ -25,16 +25,22 @@ bool encode_string(pb_ostream_t* stream, const pb_field_t* field, void* const* a
     return pb_encode_string(stream, (uint8_t*)str, strlen(str));
 }
 
-void send_pb_message(const pb_msgdesc_t* fields, const void* src_struct)
+size_t encode_pb_message(const pb_msgdesc_t* fields, const void* src_struct, uint8_t* buf, size_t size)
 {
-    uint8_t buffer[PB_BUFFER_SIZE];
-    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
+    pb_ostream_t stream = pb_ostream_from_buffer(buf, size);
 
     if (!pb_encode(&stream, fields, src_struct))
     {
         ESP_LOGE(TAG, "Failed to encode protobuf message: %s", PB_GET_ERROR(&stream));
-        return;
+        return 0;
     }
+    return stream.bytes_written;
+}
 
-    push_data_to_ws(buffer, stream.bytes_written);
+void send_pb_message(const pb_msgdesc_t* fields, const void* src_struct)
+{
+    uint8_t buffer[PB_BUFFER_SIZE];
+    size_t len = encode_pb_message(fields, src_struct, buffer, sizeof(buffer));
+    if (len)
+        push_data_to_ws(buffer, len);
 }

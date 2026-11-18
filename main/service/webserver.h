@@ -49,6 +49,11 @@ typedef struct
     // HTTPS: frames handed to the httpd task and not sent yet (0 over HTTP).
     uint32_t status_https_pending;
     uint32_t uart_https_pending;
+    // Switch and Wi-Fi state frames (never queued).
+    uint32_t status_state_frames;        // written
+    uint32_t status_state_owed;          // /ws sessions still owed state after the last pass
+    uint32_t status_state_kick_failures; // HTTPS: queuing the state pass failed
+    uint32_t status_state_kick_rearms;   // HTTPS: a queued state pass never ran
 } websocket_diagnostics_t;
 
 void register_wifi_endpoint(httpd_handle_t server);
@@ -56,6 +61,12 @@ void register_ws_endpoint(httpd_handle_t server);
 void register_control_endpoint(httpd_handle_t server);
 void register_diagnostics_endpoint(httpd_handle_t server);
 void push_data_to_ws(const uint8_t* data, size_t len);
+/** The load switch outputs may have changed (or a request finished): every /ws client is sent
+ *  the outputs as they are when its frame is written. Any task, never an ISR; never blocks. */
+void ws_publish_switch_state(void);
+/** Stores an encoded wifi_status StatusMessage as the latest Wi-Fi state (at most 80 B; a longer
+ *  frame is refused with a log line and the previous one is kept). Any task; never blocks. */
+void ws_publish_wifi_status(const uint8_t* frame, size_t len);
 void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics);
 void register_reboot_endpoint(httpd_handle_t server);
 bool uart_baud_rate_is_supported(long baud_rate);

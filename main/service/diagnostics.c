@@ -92,6 +92,10 @@ static esp_err_t diagnostics_get_handler(httpd_req_t* req)
     cJSON_AddNumberToObject(root, "status_sw_drops", ws_diagnostics.status_sw_drops);
     cJSON_AddNumberToObject(root, "status_https_pending", ws_diagnostics.status_https_pending);
     cJSON_AddNumberToObject(root, "uart_https_pending", ws_diagnostics.uart_https_pending);
+    cJSON_AddNumberToObject(root, "status_state_frames", ws_diagnostics.status_state_frames);
+    cJSON_AddNumberToObject(root, "status_state_owed", ws_diagnostics.status_state_owed);
+    cJSON_AddNumberToObject(root, "status_state_kick_failures", ws_diagnostics.status_state_kick_failures);
+    cJSON_AddNumberToObject(root, "status_state_kick_rearms", ws_diagnostics.status_state_kick_rearms);
 
     wifi_sta_diagnostics_t wifi_diagnostics;
     wifi_get_sta_diagnostics(&wifi_diagnostics);

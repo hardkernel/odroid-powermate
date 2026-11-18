@@ -23,6 +23,7 @@
 #include "nconfig.h"
 #include "pb.h"
 #include "pb_encode.h"
+#include "pbmsg.h"
 #include "pca9557.h"
 #include "status.pb.h"
 #include "webserver.h"
@@ -36,8 +37,6 @@
 
 #define POWER_DELAY (CONFIG_TRIGGER_POWER_DELAY_MS * 1000)
 #define RESET_DELAY (CONFIG_TRIGGER_RESET_DELAY_MS * 1000)
-
-#define PB_BUFFER_SIZE 256
 
 static const char* TAG = "control";
 
@@ -146,7 +145,7 @@ static void restore_load_switch_state()
                  state[0] == '1' ? "on" : "off", state[1] == '1' ? "on" : "off");
 }
 
-static void send_sw_status_message()
+size_t encode_load_switch_status(uint8_t* buf, size_t size)
 {
     StatusMessage message = StatusMessage_init_zero;
     message.which_payload = StatusMessage_sw_status_tag;
@@ -156,21 +155,7 @@ static void send_sw_status_message()
     sw_status->main = (outputs & SW_MAIN) != 0;
     sw_status->usb = (outputs & SW_USB) != 0;
 
-    uint8_t buffer[PB_BUFFER_SIZE];
-    pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
-
-    if (!pb_encode(&stream, StatusMessage_fields, &message))
-    {
-        ESP_LOGE(TAG, "Failed to encode protobuf message: %s", PB_GET_ERROR(&stream));
-        return;
-    }
-
-    push_data_to_ws(buffer, stream.bytes_written);
-}
-
-void publish_load_switch_status()
-{
-    send_sw_status_message();
+    return encode_pb_message(StatusMessage_fields, &message, buf, size);
 }
 
 // Reads the outputs back after the expander was reset (boot, critical cut-off).
@@ -194,7 +179,7 @@ esp_err_t sync_load_switch_status_from_hw()
     if (err != ESP_OK)
         return err;
 
-    send_sw_status_message();
+    ws_publish_switch_state();
     return ESP_OK;
 }
 
@@ -260,6 +245,9 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
     unsigned now = cur;
     bool changed = now != was;
     xSemaphoreGive(switch_mutex);
+    // Every call that gets here publishes, even with no change: a client is sent the outputs
+    // as they are when its frame is written, so this need not wait for the save or the events.
+    ws_publish_switch_state();
     esp_err_t persist_err = changed ? persist_load_switch_state() : ESP_OK;
 
     if (main_err != ESP_OK || usb_err != ESP_OK)
@@ -273,7 +261,6 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
     if (changed)
         push_eventf(EV_INFO, "load switches set: main=%s usb=%s", (now & SW_MAIN) ? "on" : "off",
                     (now & SW_USB) ? "on" : "off");
-    send_sw_status_message();
     return main_err != ESP_OK ? main_err : usb_err;
 }
 

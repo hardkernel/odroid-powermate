@@ -535,7 +535,11 @@ static void status_wifi_callback(void* arg)
         wifi_status->ip_address.arg = ""; // Empty string
     }
 
-    send_pb_message(StatusMessage_fields, &message);
+    // The latest Wi-Fi state, not a queued frame: every /ws client is sent the newest one.
+    uint8_t buf[PB_BUFFER_SIZE];
+    size_t len = encode_pb_message(StatusMessage_fields, &message, buf, sizeof(buf));
+    if (len)
+        ws_publish_wifi_status(buf, len);
 }
 
 // Placeholder for long press action

@@ -11,14 +11,18 @@
 #define ODROID_POWER_MATE_SW_H
 #include "esp_err.h"
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #define SW_MAIN (1u << 0)
 #define SW_USB (1u << 1)
 
 void init_sw();
 void config_sw();
-void publish_load_switch_status();
 esp_err_t sync_load_switch_status_from_hw();
+/** Encodes StatusMessage{sw_status} from the outputs as they are now (one load). Returns the
+ *  length, or 0 if it did not fit. */
+size_t encode_load_switch_status(uint8_t* buf, size_t size);
 /** Presses the SBC power (or reset) button. ESP_ERR_INVALID_STATE: the last press is still held. */
 esp_err_t trig_power();
 esp_err_t trig_reset();

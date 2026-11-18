@@ -13,6 +13,8 @@
 #define PB_BUFFER_SIZE 256
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 #include "esp_log.h"
 
@@ -22,6 +24,8 @@
 #include "webserver.h"
 
 bool encode_string(pb_ostream_t* stream, const pb_field_t* field, void* const* arg);
+/** Encodes into buf. Returns the length, or 0 (logged) if the message did not fit. */
+size_t encode_pb_message(const pb_msgdesc_t* fields, const void* src_struct, uint8_t* buf, size_t size);
 void send_pb_message(const pb_msgdesc_t* fields, const void* src_struct);
 
 #endif // ODROID_POWER_MATE_PB_H
