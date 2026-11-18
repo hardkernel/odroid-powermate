@@ -56,6 +56,8 @@ typedef struct
     uint32_t status_state_kick_rearms;   // HTTPS: a queued state pass never ran
     uint32_t websocket_close_failures;   // closing a failed session could not be queued (retried)
     uint32_t websocket_close_retries;    // such closes retried
+    uint32_t websocket_not_ready_skips;  // writes skipped (per client): the socket was not writable
+    uint32_t websocket_heap_skips;       // HTTPS writes skipped (per client): no heap for the record
 } websocket_diagnostics_t;
 
 void register_wifi_endpoint(httpd_handle_t server);

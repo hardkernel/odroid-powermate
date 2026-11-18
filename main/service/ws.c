@@ -18,7 +18,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "lwip/opt.h"     // TCP_SNDLOWAT, TCP_SNDQUEUELOWAT, TCP_SND_QUEUELEN
+#include "lwip/sockets.h" // lwip_select (select() would go through esp_vfs_select, which callocs)
 #include "nconfig.h"
+#include "pbmsg.h" // PB_BUFFER_SIZE
 #include <stdio.h>
 #include <stdlib.h>
 #include "string.h"
@@ -44,6 +47,45 @@
 #if !CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT
 #error "sdkconfig predates CONFIG_HTTPD_WS_POST_HANDSHAKE_CB_SUPPORT in sdkconfig.defaults: delete sdkconfig and rebuild"
 #endif
+
+// ---- Never block on a WebSocket write ---------------------------------------------------
+// Every write ws.c makes is checked first: the socket must be writable (lwIP then takes at
+// least TCP_SNDLOWAT bytes without waiting), and over HTTPS the heap must hold the TLS record.
+// A write that would block is skipped: a frame is lost for that client only, and owed state
+// stays owed.
+// The one exception is /uart over HTTP. Its writer, the UART sender task, writes nothing else,
+// so a blocking write there stalls only the console, as in v1.x. A check would keep at most
+// TCP_SNDLOWAT + one chunk unacknowledged instead of the whole send buffer, and drop console
+// output whenever ACKs take longer than ~40 ms at 1.5 Mbaud. A dead client fails its write
+// after httpd's send timeout (5 s), and the session is closed.
+
+#define WS_FRAME_HEADER_MAX 10         // httpd_ws.c: 2 B + 8 B extended length (server frames are not masked)
+#define WS_TLS_RECORD_OVERHEAD_MAX 128 // TLS 1.2 header + explicit IV + MAC + padding, upper bound
+// One readiness check covers at most sw_status + wifi_status + one status frame, each written as
+// header + payload (2 writes, 2 TLS records), or one UART chunk.
+#define WS_STATUS_WRITE_MAX                                                                         \
+    (3 * WS_FRAME_HEADER_MAX + 16 + WS_WIFI_FRAME_MAX + PB_BUFFER_SIZE + 6 * WS_TLS_RECORD_OVERHEAD_MAX)
+#define WS_UART_WRITE_MAX (WS_FRAME_HEADER_MAX + BUF_SIZE + 2 * WS_TLS_RECORD_OVERHEAD_MAX)
+_Static_assert(WS_STATUS_WRITE_MAX < TCP_SNDLOWAT, "a status write after a readiness check could block");
+_Static_assert(WS_UART_WRITE_MAX < TCP_SNDLOWAT, "a UART write after a readiness check could block");
+// 6 writes (3 frames x 2) of at most one segment each, or 1 + ceil(2048 / MSS) for UART.
+_Static_assert(TCP_SNDQUEUELOWAT - 1 + 6 <= TCP_SND_QUEUELEN, "the segment queue could fill after a check");
+_Static_assert(BUF_SIZE <= 2 * TCP_MSS, "a UART chunk is assumed to need at most 2 segments");
+
+// Every TLS record write allocates a TX buffer of 8 B + MBEDTLS_SSL_OUT_BUFFER_LEN (13 header +
+// 16 IV + 48 MAC + 256 padding + 4096 content). The records of one call pin up to two MSS pbufs
+// until ACKed (Nagle: the first record goes out, the rest wait in a second segment), a 2 KB
+// UART chunk three.
+#define WS_TLS_TX_BUF_LEN 4437
+#define WS_PBUF_RESERVE 3072             // two MSS pbufs per status fd written in a call
+#define WS_UART_PBUF_RESERVE 4608        // three MSS pbufs per /uart fd
+#define WS_TLS_WRITE_MIN_BLOCK 7680      // probe size per status fd (and per fd in a state pass)
+#define WS_TLS_UART_MIN_BLOCK 9216       // probe size per /uart fd
+#define WS_HEAP_PROBE_GATE (32 * 1024)   // no probe at or above this much free heap
+_Static_assert(WS_TLS_WRITE_MIN_BLOCK >= WS_TLS_TX_BUF_LEN + WS_PBUF_RESERVE, "probe smaller than one fd's write");
+_Static_assert(WS_TLS_UART_MIN_BLOCK >= WS_TLS_TX_BUF_LEN + WS_UART_PBUF_RESERVE, "probe smaller than one /uart write");
+_Static_assert(WS_STATUS_WRITE_MAX <= TCP_MSS, "status records are assumed to fit the second segment (2 pbufs)");
+_Static_assert(CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN == 4096, "WS_TLS_TX_BUF_LEN assumes 4096 B TLS out content: recompute it");
 
 static const char* TAG = "ws-uart";
 
@@ -85,6 +127,9 @@ static volatile uint32_t status_queue_drops;
 static volatile uint32_t websocket_send_failures;
 static volatile uint32_t websocket_close_failures; // httpd_sess_trigger_close failed (retried)
 static volatile uint32_t websocket_close_retries;  // closes re-triggered by a state pass
+static volatile uint32_t websocket_not_ready_skips; // writes skipped: the socket was not writable
+static volatile uint32_t websocket_heap_skips;      // HTTPS writes skipped: no heap for the TLS record
+static bool ws_https; // webserver_is_https(), set by register_ws_endpoint
 // Status frame drops by cause. status_queue_drops keeps its meaning (queue full, or not
 // handed to httpd); these split it, and add the drops it never counted.
 static volatile uint32_t status_drops_queue_full;    // the status queue was full
@@ -200,6 +245,58 @@ static esp_err_t ws_send_frame(httpd_handle_t server, int fd, uint8_t* data, siz
 
 typedef enum
 {
+    WS_READY,
+    WS_NOT_WRITABLE,
+    WS_HEAP_SHORT,
+} ws_ready_t;
+
+// A zero-timeout select returns before it allocates anything. A dead socket (RST) reads as
+// writable, and its write fails at once.
+static bool ws_fd_writable(int fd)
+{
+    fd_set w;
+    FD_ZERO(&w);
+    FD_SET(fd, &w);
+    struct timeval zero = {0, 0};
+    return lwip_select(fd + 1, NULL, &w, NULL, &zero) > 0 && FD_ISSET(fd, &w);
+}
+
+// HTTPS only. Never heap_caps_get_largest_free_block() here: it walks the whole heap with
+// interrupts masked, long enough to overflow the UART FIFO at 1.5 Mbaud. Free size and a TLSF
+// malloc/free are O(1). The probe is fresh for every fd, so the pbufs that earlier writes of
+// this call pinned are already counted.
+static bool ws_tls_heap_ok(size_t need)
+{
+    if (heap_caps_get_free_size(MALLOC_CAP_8BIT) >= WS_HEAP_PROBE_GATE)
+        return true;
+    // The caps mbedTLS allocates with (CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC).
+    void* p = heap_caps_malloc(need, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    bool ok = p != NULL;
+    free(p);
+    return ok;
+}
+
+// need: WS_TLS_WRITE_MIN_BLOCK for the status stream and the state pass, WS_TLS_UART_MIN_BLOCK
+// for /uart.
+static ws_ready_t ws_write_ready(int fd, bool https, size_t need)
+{
+    if (!ws_fd_writable(fd))
+        return WS_NOT_WRITABLE;
+    if (https && !ws_tls_heap_ok(need))
+        return WS_HEAP_SHORT;
+    return WS_READY;
+}
+
+static void count_write_skip(ws_ready_t ready)
+{
+    if (ready == WS_HEAP_SHORT)
+        websocket_heap_skips++;
+    else
+        websocket_not_ready_skips++;
+}
+
+typedef enum
+{
     WS_STATE_NONE,   // nothing was owed (or nothing could be encoded)
     WS_STATE_SENT,   // the owed state was written
     WS_STATE_FAILED, // a write failed: the session is blocked and being closed
@@ -286,6 +383,18 @@ static void ws_broadcast(const struct ws_sender_config* config, const struct ws_
         if (httpd_sess_get_ctx(server, fd) != stream || ws_state_blocked(fd) ||
             httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
             continue;
+        // /uart over HTTP is not checked: see "Never block on a WebSocket write".
+        ws_ready_t ready = WS_READY;
+        if (!config->uart_stream || ws_https)
+            ready = ws_write_ready(fd, ws_https, config->uart_stream ? WS_TLS_UART_MIN_BLOCK : WS_TLS_WRITE_MIN_BLOCK);
+        if (ready != WS_READY)
+        {
+            // Lost for this client only. A status client's owed state stays owed.
+            count_write_skip(ready);
+            if (config->uart_stream)
+                uart_queue_drops++;
+            continue;
+        }
         // State before any other frame: a new session gets its snapshot first, even if this
         // frame was queued before the state pass, and a change goes out with the next frame.
         if (!config->uart_stream && ws_send_owed_state(server, fd) == WS_STATE_FAILED)
@@ -481,8 +590,18 @@ static uint32_t ws_state_pass(httpd_handle_t server)
             continue;
         if (httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
             continue; // not upgraded yet, or closing (the client sent CLOSE)
-        // FAILED: the session is blocked and already being closed.
         struct ws_owed left;
+        if (!ws_state_owed(fd, &left))
+            continue; // nothing to write, nothing to check
+        ws_ready_t ready = ws_write_ready(fd, ws_https, WS_TLS_WRITE_MIN_BLOCK);
+        if (ready != WS_READY)
+        {
+            count_write_skip(ready); // stays owed: try again soon
+            owed++;
+            repoll = min_nonzero(repoll, WS_NOT_READY_REPOLL_MS);
+            continue;
+        }
+        // FAILED: the session is blocked and already being closed.
         if (ws_send_owed_state(server, fd) != WS_STATE_FAILED && ws_state_owed(fd, &left))
             owed++;
     }
@@ -797,6 +916,7 @@ void register_ws_endpoint(httpd_handle_t server)
     ESP_ERROR_CHECK(uart_set_pin(UART_NUM, UART_TX_PIN, UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
     gpio_set_pull_mode(UART_RX_PIN, GPIO_PULLUP_ONLY);
     ESP_ERROR_CHECK(uart_driver_install(UART_NUM, UART_RX_BUFFER_SIZE, UART_TX_BUFFER_SIZE, 20, &uart_event_queue, 0));
+    ws_https = webserver_is_https();
 
     httpd_uri_t ws = {
         .uri = "/ws",
@@ -885,6 +1005,8 @@ void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics)
     diagnostics->websocket_send_failures = websocket_send_failures;
     diagnostics->websocket_close_failures = websocket_close_failures;
     diagnostics->websocket_close_retries = websocket_close_retries;
+    diagnostics->websocket_not_ready_skips = websocket_not_ready_skips;
+    diagnostics->websocket_heap_skips = websocket_heap_skips;
     diagnostics->status_drops_queue_full = status_drops_queue_full;
     diagnostics->status_drops_https_pending = status_drops_https_pending;
     diagnostics->status_drops_ctrl_queue = status_drops_ctrl_queue;
