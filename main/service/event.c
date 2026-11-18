@@ -13,7 +13,7 @@
 
 #include "esp_timer.h"
 
-void push_event(enum event_level level, char *msg_str)
+size_t encode_event(uint8_t* buf, size_t size, enum event_level level, const char* msg)
 {
     StatusMessage message = StatusMessage_init_zero;
     message.which_payload = StatusMessage_event_data_tag;
@@ -28,9 +28,17 @@ void push_event(enum event_level level, char *msg_str)
     event_data->timestamp_ms = timestamp_ms;
     event_data->uptime_ms = uptime_ms;
     event_data->message.funcs.encode = &encode_string;
-    event_data->message.arg = msg_str;
+    event_data->message.arg = (void*)msg; // nanopb's callback arg is not const; encode_string only reads it
 
-    send_pb_message(StatusMessage_fields, &message);
+    return encode_pb_message(StatusMessage_fields, &message, buf, size);
+}
+
+void push_event(enum event_level level, char *msg_str)
+{
+    uint8_t buf[PB_BUFFER_SIZE];
+    size_t len = encode_event(buf, sizeof(buf), level, msg_str);
+    if (len)
+        push_data_to_ws(buf, len);
 }
 
 void push_eventf(enum event_level level, char *format, ...)

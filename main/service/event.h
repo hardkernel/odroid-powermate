@@ -21,6 +21,9 @@ enum event_level
 };
 
 
+/** Encodes an EventData StatusMessage stamped now into buf. Returns its length, or 0 (logged) if
+ *  it does not fit. */
+size_t encode_event(uint8_t* buf, size_t size, enum event_level level, const char* msg);
 void push_event(enum event_level level, char *msg_str);
 void push_eventf(enum event_level level, char *format, ...) __attribute__((format(printf, 2, 3)));
 
