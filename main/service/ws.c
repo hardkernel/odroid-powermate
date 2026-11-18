@@ -147,8 +147,8 @@ static volatile uint32_t state_owed;          // gauge: /ws sessions still owed 
 static volatile uint32_t state_kick_failures; // HTTPS: queuing the state pass failed (retried)
 static volatile uint32_t state_kick_rearms;   // HTTPS: a queued state pass never ran, kicked again
 static TaskHandle_t volatile status_sender_task; // NULL until register_ws_endpoint created it
-static uint8_t status_ws_session;
-static uint8_t uart_ws_session;
+static uint8_t status_ws_session; // the /ws URI's user_ctx; each /ws session's ctx is ws_state_ctx(fd)
+static uint8_t uart_ws_session;   // the /uart URI's user_ctx and the ctx of every /uart session
 
 // First byte of an encoded StatusMessage: the tag of its oneof payload.
 #define PB_TAG_SW_STATUS 0x1a // StatusMessage.sw_status, field 3, length-delimited
@@ -193,7 +193,8 @@ static bool status_websocket_client_connected(httpd_handle_t server)
 
     for (size_t i = 0; i < clients; ++i)
     {
-        if (httpd_sess_get_ctx(server, client_fds[i]) == &status_ws_session && !ws_state_blocked(client_fds[i]) &&
+        if (ws_state_ctx_is(client_fds[i], httpd_sess_get_ctx(server, client_fds[i])) &&
+            !ws_state_blocked(client_fds[i]) &&
             httpd_ws_get_fd_info(server, client_fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET)
             return true;
     }
@@ -345,8 +346,8 @@ typedef enum
 } ws_state_send_t;
 
 // Writes the state this session is owed, sw_status first, then wifi_status. Called only by the
-// one writer of the current mode, for an fd whose ctx is &status_ws_session, not blocked, and
-// a WebSocket.
+// one writer of the current mode, for an fd whose ctx is its /ws context (ws_state_ctx), not
+// blocked, and a WebSocket.
 static ws_state_send_t ws_send_owed_state(httpd_handle_t server, int fd)
 {
     struct ws_owed owed;
@@ -400,7 +401,7 @@ static void ws_refresh_lru(httpd_handle_t server, const int* fds, size_t n)
     {
         int fd = fds[i];
         void* ctx = httpd_sess_get_ctx(server, fd);
-        if ((ctx == &status_ws_session || ctx == &uart_ws_session) && !ws_state_blocked(fd) &&
+        if ((ws_state_ctx_is(fd, ctx) || ctx == &uart_ws_session) && !ws_state_blocked(fd) &&
             httpd_ws_get_fd_info(server, fd) == HTTPD_WS_CLIENT_WEBSOCKET &&
             (!ws_state_stalled_for(fd, now, pdMS_TO_TICKS(WS_LRU_STALL_MS)) || ws_fd_writable(fd)))
             httpd_sess_update_lru_counter(server, fd);
@@ -421,12 +422,12 @@ static void ws_broadcast(const struct ws_sender_config* config, const struct ws_
     if (!config->uart_stream)
         ws_refresh_lru(server, client_fds, clients);
 
-    void* stream = config->uart_stream ? (void*)&uart_ws_session : (void*)&status_ws_session;
     for (size_t i = 0; i < clients; ++i)
     {
         int fd = client_fds[i];
-        if (httpd_sess_get_ctx(server, fd) != stream || ws_state_blocked(fd) ||
-            httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
+        void* ctx = httpd_sess_get_ctx(server, fd);
+        bool stream = config->uart_stream ? ctx == &uart_ws_session : ws_state_ctx_is(fd, ctx);
+        if (!stream || ws_state_blocked(fd) || httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
             continue;
         // /uart over HTTP is not checked: see "Never block on a WebSocket write".
         ws_ready_t ready = WS_READY;
@@ -618,7 +619,7 @@ static uint32_t ws_state_pass(httpd_handle_t server)
             // WebSocket. After the client's CLOSE httpd closes the session itself, and a second
             // queued close could close a new session in the same slot.
             void* ctx = httpd_sess_get_ctx(server, fd);
-            if ((ctx == &status_ws_session || ctx == &uart_ws_session) && ws_state_blocked(fd) &&
+            if ((ws_state_ctx_is(fd, ctx) || ctx == &uart_ws_session) && ws_state_blocked(fd) &&
                 httpd_ws_get_fd_info(server, fd) == HTTPD_WS_CLIENT_WEBSOCKET)
             {
                 websocket_close_retries++;
@@ -631,7 +632,7 @@ static uint32_t ws_state_pass(httpd_handle_t server)
             }
             continue;
         }
-        if (httpd_sess_get_ctx(server, fd) != &status_ws_session || ws_state_blocked(fd))
+        if (!ws_state_ctx_is(fd, httpd_sess_get_ctx(server, fd)) || ws_state_blocked(fd))
             continue;
         if (httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
             continue; // not upgraded yet, or closing (the client sent CLOSE)
@@ -865,13 +866,21 @@ static esp_err_t websocket_handshake(httpd_req_t* req, bool uart_stream, bool up
     free(query);
 
     int fd = httpd_req_to_sockfd(req);
+    // /uart sessions share one tag. A /ws session's context is its fd's state entry, so that
+    // free_ctx, which gets no fd, can tell which session ended.
+    void* ctx = uart_stream ? (void*)&uart_ws_session : ws_state_ctx(fd);
+    if (!ctx)
+    {
+        httpd_resp_send_500(req); // lwIP hands out no such fd (see MAX_CLIENT)
+        return ESP_FAIL;
+    }
     // A new WebSocket session on this fd: everything the previous one left is reset at once.
     if (upgrade)
         ws_state_session_opened(fd);
     else
         ws_state_unblock(fd);
-    req->sess_ctx = uart_stream ? (void*)&uart_ws_session : (void*)&status_ws_session;
-    req->free_ctx = websocket_session_ctx_free;
+    req->sess_ctx = ctx;
+    req->free_ctx = websocket_session_ctx_free; // never NULL: httpd would free() the context
 
     return ESP_OK;
 }

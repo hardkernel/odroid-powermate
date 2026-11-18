@@ -48,6 +48,11 @@ size_t ws_state_copy_wifi(uint8_t* buf, size_t size, uint32_t* gen);
 
 /** The table slot of a socket. False for an fd outside lwIP's range, which is never tracked. */
 bool ws_state_slot(int fd, int* slot);
+/** The httpd session context of a /ws session on fd: its table entry, which ws.c treats as an
+ *  opaque pointer. NULL for an fd outside the table. */
+void* ws_state_ctx(int fd);
+/** True if ctx is the /ws session context of fd. */
+bool ws_state_ctx_is(int fd, const void* ctx);
 /** A WebSocket handshake on fd: a new session, owed everything, with every flag cleared. */
 void ws_state_session_opened(int fd);
 /** A write failed: write nothing more to this session. Set before its close is triggered. */

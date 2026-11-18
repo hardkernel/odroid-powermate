@@ -105,6 +105,19 @@ bool ws_state_slot(int fd, int* slot)
     return true;
 }
 
+void* ws_state_ctx(int fd)
+{
+    int i;
+    if (!ws_state_slot(fd, &i))
+        return NULL;
+    return &fds[i];
+}
+
+bool ws_state_ctx_is(int fd, const void* ctx)
+{
+    return ctx != NULL && ctx == ws_state_ctx(fd);
+}
+
 void ws_state_session_opened(int fd)
 {
     int i;
