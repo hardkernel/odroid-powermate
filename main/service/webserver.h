@@ -30,13 +30,19 @@
 
 typedef struct
 {
-    size_t queue_depth;
-    size_t queue_capacity;
+    size_t queue_depth;    // /uart: bytes waiting in the UART ring (= uart_buffered_bytes)
+    size_t queue_capacity; // /uart: the ring's size
     size_t uart_buffered_bytes;
-    uint32_t uart_received_bytes;
-    uint32_t uart_fifo_overflows;
-    uint32_t uart_buffer_full_events;
-    uint32_t uart_queue_drops;
+    uint32_t uart_received_bytes;     // read out of the ring = frame + shed + no-viewer bytes
+    uint32_t uart_fifo_overflows;     // overflow episodes with a FIFO overrun (bytes lost uncounted)
+    uint32_t uart_buffer_full_events; // overflow episodes with a full ring
+    uint32_t uart_queue_drops;        // shed events + (viewer, frame) losses
+    uint32_t uart_frame_bytes;        // read into frames for the viewers
+    uint32_t uart_shed_bytes;         // discarded: the ring was nearly full and no frame went out
+    uint32_t uart_no_viewer_bytes;    // discarded: no /uart viewer
+    uint32_t uart_viewer_drop_bytes;  // per viewer: frame bytes it did not get
+    uint32_t uart_lagging_marks;      // viewers that were not ready past the hold cap
+    uint32_t uart_kick_failures;      // HTTPS: queuing the /uart drain failed (retried)
     uint32_t status_queue_drops; // = status_events_missed (there is no status queue)
     uint32_t websocket_send_failures;
     // Status frame drops by cause. Only status_drops_no_client has a drop point left: events
@@ -47,9 +53,8 @@ typedef struct
     uint32_t status_drops_no_memory;
     uint32_t status_drops_no_client;
     uint32_t status_sw_drops;
-    // HTTPS: UART chunks handed to the httpd task and not sent yet (0 over HTTP; status: always 0).
-    uint32_t status_https_pending;
-    uint32_t uart_https_pending;
+    uint32_t status_https_pending; // always 0
+    uint32_t uart_https_pending;   // HTTPS: /uart drain items queued and not started (0 over HTTP)
     // Switch and Wi-Fi state frames (never queued).
     uint32_t status_state_frames;        // written
     uint32_t status_state_owed;          // /ws sessions still owed state after the last pass

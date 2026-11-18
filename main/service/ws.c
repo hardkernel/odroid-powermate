@@ -35,8 +35,39 @@
 #define BUF_SIZE 2048
 #define UART_RX_BUFFER_SIZE (16 * 1024)
 #define UART_TX_BUFFER_SIZE 2048
-#define UART_WS_QUEUE_LENGTH 8
-#define UART_MIN_FREE_HEAP (48 * 1024)
+#define UART_MIN_FREE_HEAP (48 * 1024) // below this much free heap /uart holds (never drops)
+// /uart: see "the bridge and the drain" below.
+#define UART_FRAME_MAX 1400             // payload: 4 + 1400 + 29 B of TLS 1.2 GCM = one 1440 B MSS
+#define UART_FRAME_HEAD 4               // room for the longest header this payload needs
+#define UART_WAKE_BYTES 1024            // a frame is due at this much buffered,
+#define UART_WAKE_AGE_MS 8              // or once the oldest byte has waited this long,
+#define UART_IDLE_MS 10                 // or at once if no frame was taken for this long
+#define UART_DRAIN_FRAMES 8             // frames per drain run (~11 KB)
+#define UART_HOLD_RETRY_MS 10           // a held drain runs again after this
+#define UART_HOLD_RING_MAX (10 * 1024)  // a not-ready viewer holds the ready ones while the ring is below this
+#define UART_HOLD_MS_MAX 200            // and the hold is younger than this; then it is marked lagging
+#define UART_LAG_REGATE_FRAMES 8        // a lagging viewer gates again after this many ready frames
+#define UART_LAG_REGATE_RING (4 * 1024) // in a row with the ring below this
+#define UART_SHED_HIGH (14 * 1024)      // the bridge sheds the oldest bytes from this
+#define UART_SHED_LOW (12 * 1024)       // down to this
+#define UART_SHED_STALL_MS 10           // when no frame was taken for this long
+#define UART_KICK_RETRY_MS 20           // HTTPS: httpd_queue_work failed, kick again after this
+#define UART_KICK_REARM_MS 1000         // HTTPS: a queued drain has not started: its datagram was lost
+#define UART_KICK_FALLBACK_MS 2000      // HTTPS: two queued drains have not started: both were lost
+#define UART_BRIDGE_IDLE_MS 20          // the bridge re-checks an empty ring at least this often
+#define UART_WRITER_IDLE_MS 100         // HTTP: the writer runs at least this often
+#define UART_SCRATCH_SIZE 256           // the bridge's discard buffer
+// Stacks: the bridge calls lwIP sendto (the kick), uart_read_bytes and ESP_LOGW; the HTTP writer
+// an lwIP send and ESP_LOGW (v1.x's UART sender, which did the same, peaked at ~1.7 KB).
+#define UART_BRIDGE_STACK 4096
+#define UART_WRITER_STACK 3584
+#define UART_BRIDGE_PRIO_HTTPS 12 // = httpd: time-sliced every tick, even during a handshake
+#define UART_BRIDGE_PRIO_HTTP 10  // below httpd, above the writer
+#define UART_WRITER_PRIO 9        // HTTP: below httpd, so it cannot split httpd's two-write PONG
+_Static_assert(UART_SHED_LOW < UART_SHED_HIGH && UART_SHED_HIGH < UART_RX_BUFFER_SIZE, "shed band outside the ring");
+_Static_assert(UART_HOLD_RING_MAX < UART_SHED_LOW, "a hold must end before the bridge sheds");
+_Static_assert(UART_FRAME_MAX >= UART_WAKE_BYTES, "a due frame must fit one read");
+_Static_assert(UART_FRAME_MAX >= 126 && UART_FRAME_MAX < 65536, "UART_FRAME_HEAD assumes a 16-bit length");
 #define WS_LRU_UPDATE_INTERVAL_MS 1000
 #define WS_NOT_READY_REPOLL_MS 200 // a state pass has work left: run another after this
 #define WS_HEAP_CLOSE_GAP_MS 2000  // at most one close per this of sessions stalled for heap only
@@ -58,33 +89,37 @@
 // A write that would block is skipped. On /ws the skip itself loses nothing: owed state stays
 // owed and the session's lane cursors stay put, so its frames go out with a later write. Only
 // what the lanes drop meanwhile is lost: events the ring evicts (a marker reports how many) and
-// samples older than the newest WS_SENSOR_SLOTS. On /uart the chunk is lost for that client.
-// The one exception is /uart over HTTP. Its writer, the UART sender task, writes nothing else,
-// so a blocking write there stalls only the console, as in v1.x. A check would keep at most
-// TCP_SNDLOWAT + one chunk unacknowledged instead of the whole send buffer, and drop console
-// output whenever ACKs take longer than ~40 ms at 1.5 Mbaud. A dead client fails its write
-// after httpd's send timeout (5 s), and the session is closed.
+// samples older than the newest WS_SENSOR_SLOTS. On /uart the bytes wait in the UART ring while
+// a viewer is not ready (see uart_drain); a viewer that stays so past the hold cap loses frames
+// (counted) until it catches up.
+// The one exception is /uart over HTTP. Its writer, the UART writer task, writes nothing else,
+// so a blocking write there stalls only the console, as in v1.x. A dead client fails its write
+// after httpd's send timeout (5 s), and the session is closed; meanwhile the bridge sheds
+// (counted).
 
 #define WS_FRAME_HEADER_MAX 10         // httpd_ws.c: 2 B + 8 B extended length (server frames are not masked)
 #define WS_TLS_RECORD_OVERHEAD_MAX 128 // TLS 1.2 header + explicit IV + MAC + padding, upper bound
 // One readiness check covers one status write (one httpd_socket_send of whole frames, so one TLS
-// record), or one UART chunk (header + payload, 2 writes, 2 TLS records).
+// record), or one UART frame (header and payload in one write, one TLS record).
 #define WS_BATCH_SIZE 384
 #define WS_STATUS_WRITE_MAX (WS_BATCH_SIZE + WS_TLS_RECORD_OVERHEAD_MAX) // 512
-#define WS_UART_WRITE_MAX (WS_FRAME_HEADER_MAX + BUF_SIZE + 2 * WS_TLS_RECORD_OVERHEAD_MAX)
+#define WS_UART_WRITE_MAX (UART_FRAME_HEAD + UART_FRAME_MAX + WS_TLS_RECORD_OVERHEAD_MAX)
+#define WS_TLS12_GCM_OVERHEAD 29 // 5 B header + 8 B explicit nonce + 16 B tag
 _Static_assert(WS_STATUS_WRITE_MAX < TCP_SNDLOWAT, "a status write after a readiness check could block");
 _Static_assert(WS_UART_WRITE_MAX < TCP_SNDLOWAT, "a UART write after a readiness check could block");
-// 2 segments for one status write, 1 + ceil(2048 / MSS) for UART.
+// 2 segments for one status write, 1 for a UART frame (2 with a CBC suite).
 _Static_assert(TCP_SNDQUEUELOWAT - 1 + 6 <= TCP_SND_QUEUELEN, "the segment queue could fill after a check");
-_Static_assert(BUF_SIZE <= 2 * TCP_MSS, "a UART chunk is assumed to need at most 2 segments");
+_Static_assert(UART_FRAME_HEAD + UART_FRAME_MAX + WS_TLS12_GCM_OVERHEAD <= TCP_MSS,
+               "a UART frame is assumed to be one segment over HTTPS");
+_Static_assert(UART_FRAME_HEAD + UART_FRAME_MAX <= CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN, "a UART frame must be one TLS record");
 
 // Every TLS record write allocates a TX buffer of 8 B + MBEDTLS_SSL_OUT_BUFFER_LEN (13 header +
 // 16 IV + 48 MAC + 256 padding + 4096 content). The records of one call pin up to two MSS pbufs
-// until ACKed (Nagle: the first record goes out, the rest wait in a second segment), a 2 KB
-// UART chunk three.
+// until ACKed (Nagle: the first record goes out, the rest wait in a second segment). A UART
+// frame pins fewer; its probe keeps the size of the 2 KB chunks it replaced.
 #define WS_TLS_TX_BUF_LEN 4437
 #define WS_PBUF_RESERVE 3072             // two MSS pbufs per status write
-#define WS_UART_PBUF_RESERVE 4608        // three MSS pbufs per /uart fd
+#define WS_UART_PBUF_RESERVE 4608        // three MSS pbufs per /uart fd (an upper bound)
 #define WS_TLS_WRITE_MIN_BLOCK 7680      // probe size per status write
 #define WS_TLS_UART_MIN_BLOCK 9216       // probe size per /uart fd
 #define WS_HEAP_PROBE_GATE (32 * 1024)   // no probe at or above this much free heap
@@ -100,19 +135,10 @@ static const long supported_baud_rates[] = {
     9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600, 1500000,
 };
 
-struct ws_message
-{
-    uint8_t* data;
-    size_t len;
-};
-
 struct ws_sender_config
 {
-    QueueHandle_t queue;
     httpd_handle_t server;
-    bool uart_stream;
     const char* name;
-    atomic_int pending; // HTTPS: frames handed to the httpd task and not sent yet
 };
 
 #define MAX_CLIENT POWERMATE_HTTP_MAX_OPEN_SOCKETS
@@ -120,14 +146,21 @@ struct ws_sender_config
 // per lwIP socket, so it covers every session.
 _Static_assert(POWERMATE_HTTP_MAX_OPEN_SOCKETS + 3 <= CONFIG_LWIP_MAX_SOCKETS,
                "CONFIG_LWIP_MAX_SOCKETS too small for POWERMATE_HTTP_MAX_OPEN_SOCKETS: delete sdkconfig and rebuild");
-static QueueHandle_t uart_ws_queue;
 static QueueHandle_t uart_event_queue;
 static struct ws_sender_config status_sender;
-static struct ws_sender_config uart_sender;
 static volatile uint32_t uart_received_bytes;
-static volatile uint32_t uart_fifo_overflows;
-static volatile uint32_t uart_buffer_full_events;
-static volatile uint32_t uart_queue_drops;
+static volatile uint32_t uart_fifo_overflows;     // overflow episodes with a FIFO overrun
+static volatile uint32_t uart_buffer_full_events; // overflow episodes with a full ring
+static volatile uint32_t uart_queue_drops;        // shed events + (viewer, frame) losses
+// Where every byte read out of the ring went: uart_received_bytes = uart_frame_bytes +
+// uart_shed_bytes + uart_no_viewer_bytes, exactly whenever no read is in progress (each read
+// is counted in both right after it returns).
+static volatile uint32_t uart_frame_bytes;       // read into frames for the viewers
+static volatile uint32_t uart_shed_bytes;        // discarded: the ring was nearly full and no frame went out
+static volatile uint32_t uart_no_viewer_bytes;   // discarded: no /uart viewer
+static volatile uint32_t uart_viewer_drop_bytes; // per viewer: frame bytes it did not get
+static volatile uint32_t uart_lagging_marks;     // viewers that stopped holding the others
+static volatile uint32_t uart_kick_failures;     // HTTPS: queuing the drain failed (retried)
 static volatile uint32_t websocket_send_failures;
 static volatile uint32_t websocket_close_failures; // httpd_sess_trigger_close failed (retried)
 static volatile uint32_t websocket_close_retries;  // closes re-triggered by a state pass
@@ -153,22 +186,43 @@ static void websocket_session_ctx_free(void* ctx)
     ws_state_ctx_free(ctx);
 }
 
-static bool uart_websocket_client_connected(httpd_handle_t server)
+typedef enum
+{
+    UART_SEEN_NONE,    // no /uart viewer: the bridge may discard
+    UART_SEEN_VIEWER,  // a /uart viewer
+    UART_SEEN_UNKNOWN, // an open WebSocket without a session context: treat as a viewer
+} uart_seen_t;
+
+// The bridge's /uart viewer check. Over HTTPS the bridge runs at httpd's priority and can
+// preempt httpd at a tick inside httpd_req_new, after it set the request's session
+// (hd_req_aux.sd) and before it copied the session's context: httpd_sess_get_ctx then returns
+// NULL for that session. The same holds on a close, between httpd_sess_clear_ctx and the slot
+// being freed. Every WebSocket URI here sets its context in the handshake, so an open WebSocket
+// with a NULL context is UNKNOWN for this pass, never "no viewer" (which would discard the
+// whole ring). The drain's own check (uart_viewers) runs in httpd over HTTPS and below httpd
+// over HTTP, so it never sees that state.
+static uart_seen_t uart_websocket_client_connected(httpd_handle_t server)
 {
     int client_fds[MAX_CLIENT];
     size_t clients = MAX_CLIENT;
 
     if (httpd_get_client_list(server, &clients, client_fds) != ESP_OK)
-        return false;
+        return UART_SEEN_NONE;
 
+    uart_seen_t seen = UART_SEEN_NONE;
     for (size_t i = 0; i < clients; ++i)
     {
-        if (httpd_sess_get_ctx(server, client_fds[i]) == &uart_ws_session && !ws_state_blocked(client_fds[i]) &&
-            httpd_ws_get_fd_info(server, client_fds[i]) == HTTPD_WS_CLIENT_WEBSOCKET)
-            return true;
+        if (ws_state_blocked(client_fds[i]) ||
+            httpd_ws_get_fd_info(server, client_fds[i]) != HTTPD_WS_CLIENT_WEBSOCKET)
+            continue;
+        void* ctx = httpd_sess_get_ctx(server, client_fds[i]);
+        if (ctx == &uart_ws_session)
+            return UART_SEEN_VIEWER;
+        if (ctx == NULL)
+            seen = UART_SEEN_UNKNOWN;
     }
 
-    return false;
+    return seen;
 }
 
 static void wake_status_sender(void)
@@ -201,21 +255,6 @@ static void ws_session_failed(httpd_handle_t server, int fd, const char* name, e
     ws_state_block(fd);
     ESP_LOGW(TAG, "%s: send failed for fd %d: %s", name, fd, esp_err_to_name(err));
     ws_close_session(server, fd);
-}
-
-static esp_err_t ws_send_frame(httpd_handle_t server, int fd, uint8_t* data, size_t len, const char* name)
-{
-    httpd_ws_frame_t frame = {
-        .payload = data,
-        .len = len,
-        .type = HTTPD_WS_TYPE_BINARY,
-    };
-    esp_err_t err = httpd_ws_send_frame_async(server, fd, &frame);
-    if (err != ESP_OK)
-        ws_session_failed(server, fd, name, err);
-    else
-        ws_state_write_done(fd);
-    return err;
 }
 
 typedef enum
@@ -281,12 +320,13 @@ static void stall_close(httpd_handle_t server, int fd, bool heap, bool status)
     ws_close_session(server, fd);
 }
 
-// A write to fd was skipped as not ready. A WebSocket that stays so for WS_STALL_CLOSE_MS is
-// closed: a socket that cannot take TCP_SNDLOWAT bytes in that time is dead in practice. A heap
-// shortage is global, so of the sessions stalled for heap only, one is closed per
-// WS_HEAP_CLOSE_GAP_MS: each close frees a TLS session (~4 KB), and the next pass re-checks.
+// fd was not ready for a write. A WebSocket that stays so for WS_STALL_CLOSE_MS is closed: a
+// socket that cannot take TCP_SNDLOWAT bytes in that time is dead in practice. A heap shortage
+// is global, so of the sessions stalled for heap only, one is closed per WS_HEAP_CLOSE_GAP_MS:
+// each close frees a TLS session (~4 KB), and the next pass re-checks. Not counted as a skip:
+// /uart calls this while it holds a frame for a not-ready viewer.
 // status: fd is a /ws session (for the diagnostics only).
-static void ws_write_skipped(httpd_handle_t server, int fd, ws_ready_t ready, bool status)
+static void ws_stall_clock(httpd_handle_t server, int fd, ws_ready_t ready, bool status)
 {
     // Heap stalls happen only over HTTPS, so these are used by the httpd task only.
     static TickType_t last_heap_close;
@@ -294,7 +334,6 @@ static void ws_write_skipped(httpd_handle_t server, int fd, ws_ready_t ready, bo
     TickType_t now = xTaskGetTickCount();
     bool heap;
 
-    count_write_skip(ready);
     ws_state_write_skipped(fd, now, ready == WS_HEAP_SHORT);
     if (!ws_state_stall_expired(fd, now, &heap))
         return;
@@ -310,6 +349,13 @@ static void ws_write_skipped(httpd_handle_t server, int fd, ws_ready_t ready, bo
     }
 }
 
+// A write to fd was skipped as not ready: counted, and the stall clock runs.
+static void ws_write_skipped(httpd_handle_t server, int fd, ws_ready_t ready, bool status)
+{
+    count_write_skip(ready);
+    ws_stall_clock(server, fd, ready, status);
+}
+
 // httpd closes the least recently used session when a new connection arrives and all are
 // taken. A WebSocket only counts as used when the client sends something, which the status
 // and UART streams almost never do, so a page load would close a live stream before an idle
@@ -318,7 +364,7 @@ static void ws_write_skipped(httpd_handle_t server, int fd, ws_ready_t ready, bo
 // WebSocket, the UART ones included, as used once a second. One whose writes have been
 // skipped for WS_LRU_STALL_MS and that is still not writable is not kept ahead of idle
 // connections. Writability alone is no test: a busy console is often unwritable for a moment,
-// and a quiet one keeps the stall of its last skipped chunk.
+// and a quiet one keeps the stall of its last held or skipped frame.
 // Called from one task in each mode: the status sender over HTTP, the httpd task over HTTPS.
 static void ws_refresh_lru(httpd_handle_t server, const int* fds, size_t n)
 {
@@ -337,126 +383,6 @@ static void ws_refresh_lru(httpd_handle_t server, const int* fds, size_t n)
             httpd_sess_update_lru_counter(server, fd);
     }
     last_lru_update = now;
-}
-
-/** Sends one UART chunk to every /uart WebSocket. (The status stream is written by the status
- *  pass, ws_state_pass.) */
-static void ws_broadcast(const struct ws_sender_config* config, const struct ws_message* msg)
-{
-    // Used from one task: the UART sender in HTTP mode, the httpd task in HTTPS mode.
-    httpd_handle_t server = config->server;
-    int client_fds[MAX_CLIENT];
-    size_t clients = MAX_CLIENT;
-    if (httpd_get_client_list(server, &clients, client_fds) != ESP_OK)
-        return;
-
-    for (size_t i = 0; i < clients; ++i)
-    {
-        int fd = client_fds[i];
-        if (httpd_sess_get_ctx(server, fd) != &uart_ws_session || ws_state_blocked(fd) ||
-            httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
-            continue;
-        // /uart over HTTP is not checked: see "Never block on a WebSocket write".
-        ws_ready_t ready = WS_READY;
-        if (ws_https)
-            ready = ws_write_ready(fd, ws_https, WS_TLS_UART_MIN_BLOCK);
-        if (ready != WS_READY)
-        {
-            // Lost for this client only.
-            ws_write_skipped(server, fd, ready, false);
-            uart_queue_drops++;
-            continue;
-        }
-        ws_send_frame(server, fd, msg->data, msg->len, config->name);
-    }
-}
-
-// HTTPS: a TLS session must not be written by one task while httpd reads it in another,
-// so the UART chunks go to the httpd task, a few at a time. (The status stream is one work
-// item, ws_state_work, so a console flood cannot crowd it out.)
-#define WS_HTTPS_MAX_PENDING 3
-
-struct ws_work
-{
-    struct ws_sender_config* config;
-    struct ws_message msg;
-};
-
-static void ws_broadcast_work(void* arg)
-{
-    struct ws_work* work = arg;
-    ws_broadcast(work->config, &work->msg);
-    free(work->msg.data);
-    atomic_fetch_sub(&work->config->pending, 1);
-    free(work);
-}
-
-typedef enum
-{
-    WS_QUEUED,
-    WS_PENDING_FULL, // WS_HTTPS_MAX_PENDING frames are already pending
-    WS_NO_MEMORY,    // the work item could not be allocated
-    WS_CTRL_FAILED,  // httpd_queue_work failed
-} ws_queue_result_t;
-
-static ws_queue_result_t ws_queue_to_httpd(struct ws_sender_config* config, struct ws_message* msg)
-{
-    if (atomic_fetch_add(&config->pending, 1) >= WS_HTTPS_MAX_PENDING)
-    {
-        atomic_fetch_sub(&config->pending, 1);
-        return WS_PENDING_FULL;
-    }
-    ws_queue_result_t result = WS_NO_MEMORY;
-    struct ws_work* work = malloc(sizeof(*work));
-    if (work)
-    {
-        work->config = config;
-        work->msg = *msg;
-        if (httpd_queue_work(config->server, ws_broadcast_work, work) == ESP_OK)
-            return WS_QUEUED;
-        free(work);
-        result = WS_CTRL_FAILED;
-    }
-    atomic_fetch_sub(&config->pending, 1);
-    return result;
-}
-
-// Sends one dequeued UART chunk (HTTP) or hands it to the httpd task (HTTPS), and frees it.
-static void ws_sender_handle(struct ws_sender_config* config, struct ws_message* msg, bool https)
-{
-    if (!https)
-    {
-        ws_broadcast(config, msg);
-        free(msg->data);
-        return;
-    }
-    if (ws_queue_to_httpd(config, msg) == WS_QUEUED)
-        return;
-    uart_queue_drops++;
-    free(msg->data);
-}
-
-// The UART stream's sender.
-static void ws_sender_task(void* arg)
-{
-    struct ws_sender_config* config = arg;
-    const bool https = webserver_is_https();
-    struct ws_message msg;
-
-    while (1)
-    {
-        if (xQueueReceive(config->queue, &msg, portMAX_DELAY) != pdPASS)
-            continue;
-
-        if (config->uart_stream && heap_caps_get_free_size(MALLOC_CAP_8BIT) < UART_MIN_FREE_HEAP)
-        {
-            uart_queue_drops++;
-            free(msg.data);
-            continue;
-        }
-
-        ws_sender_handle(config, &msg, https);
-    }
 }
 
 // ---- The status stream: state, events and sensor samples ---------------------------------
@@ -943,78 +869,500 @@ static void ws_status_sender_task(void* arg)
     }
 }
 
-static void uart_polling_task(void* arg)
+// ---- /uart: the bridge (reader side) and the drain (writer side) -------------------------
+// The driver's RX ring is the only buffer. The bridge task reads it only to discard (no viewer,
+// or shedding); the writer reads one frame at a time, and only when it can deliver it. Over
+// HTTPS the writer is the httpd task (one static work item, normally at most 2 in flight), over
+// HTTP a task of its own below httpd.
+
+static httpd_handle_t uart_server;               // set before the bridge or the writer exists
+static TaskHandle_t volatile uart_writer_handle; // HTTP only; NULL until created
+// HTTPS: drain work items by sequence number. The bridge numbers each item it queues (the
+// number is the work argument, a value, not a pointer) and the item publishes the newest
+// number started, so queued - started counts the items in flight exactly (see
+// uart_kick_in_flight), a stale item never re-opens the kick, and a lost datagram heals as soon
+// as a later item starts.
+static atomic_uint uart_queued_seq;    // bridge: the number of the last item queued
+static atomic_uint uart_started_seq;   // httpd: the newest number started
+static atomic_uint uart_report;        // the last drain result + 1 (writer to bridge), 0 = none
+static atomic_uint uart_last_frame;    // tick of the last frame read (writer to bridge)
+static atomic_uint uart_pending_since; // tick at which the bridge saw the oldest unsent byte
+static atomic_bool uart_pending;       // uart_pending_since is valid
+static atomic_bool uart_wake_req;      // a /uart handshake asks for a drain
+// The bridge found no viewer and discarded: a hold in progress ended then (the drain clears it).
+static atomic_bool uart_viewers_lost;
+static uint8_t uart_scratch[UART_SCRATCH_SIZE];              // the bridge's only: shed and discard reads
+static uint8_t uart_frame[UART_FRAME_HEAD + UART_FRAME_MAX]; // the writer's only
+static atomic_uint uart_read_seq; // successful driver reads by either reader (overflow episodes)
+
+// Every byte read out of the driver ring, by either reader.
+static void uart_count_read(int n)
 {
-    httpd_handle_t server = arg;
-    static uint8_t data_buf[BUF_SIZE];
+    __atomic_fetch_add(&uart_received_bytes, (uint32_t)n, __ATOMIC_RELAXED);
+    atomic_fetch_add(&uart_read_seq, 1);
+}
 
-    while (1)
+// An overflow is counted, never answered with uart_flush_input: the ISR already resets the FIFO
+// on an overrun (uart.c), and a full ring re-enables RX on the next uart_read_bytes, so a flush
+// only threw away what was already safe in the ring. An episode is the first FIFO_OVF or
+// BUFFER_FULL after a successful read. The counts are floors: the ISR drops events while the
+// event queue is full. Bridge only.
+static unsigned uart_ep_reads;         // uart_read_seq at the last overflow event
+static bool uart_ep_seen;              // an overflow event was seen since boot
+static bool uart_ep_ovf, uart_ep_full; // this episode has counted its overrun / its full ring
+static bool uart_ovf_logged;
+static TickType_t uart_ovf_log_at; // the last overflow log line
+
+static void uart_note_event(const uart_event_t* ev, TickType_t now)
+{
+    if (ev->type != UART_FIFO_OVF && ev->type != UART_BUFFER_FULL)
+        return; // UART_DATA and the rest: the bridge polls the ring length
+    bool ovf = ev->type == UART_FIFO_OVF;
+    unsigned reads = atomic_load(&uart_read_seq);
+    if (!uart_ep_seen || reads != uart_ep_reads)
     {
-        size_t available_len;
-        uart_get_buffered_data_len(UART_NUM, &available_len);
-        if (available_len == 0)
-        {
-            vTaskDelay(pdMS_TO_TICKS(2));
-            continue;
-        }
-
-        size_t read_len = available_len < sizeof(data_buf) ? available_len : sizeof(data_buf);
-        int bytes_read = uart_read_bytes(UART_NUM, data_buf, read_len, 0);
-        if (bytes_read <= 0)
-            continue;
-
-        uart_received_bytes += bytes_read;
-
-        if (!uart_websocket_client_connected(server))
-            continue;
-
-        if (uxQueueSpacesAvailable(uart_ws_queue) == 0 ||
-            heap_caps_get_free_size(MALLOC_CAP_8BIT) < UART_MIN_FREE_HEAP)
-        {
-            uart_queue_drops++;
-            continue;
-        }
-
-        struct ws_message msg = {
-            .data = malloc(bytes_read),
-            .len = bytes_read,
-        };
-        if (!msg.data)
-        {
-            uart_queue_drops++;
-            continue;
-        }
-        memcpy(msg.data, data_buf, bytes_read);
-
-        if (xQueueSend(uart_ws_queue, &msg, 0) != pdPASS)
-        {
-            uart_queue_drops++;
-            free(msg.data);
-        }
+        uart_ep_seen = true;
+        uart_ep_ovf = uart_ep_full = false;
+    }
+    uart_ep_reads = reads;
+    if (ovf && !uart_ep_ovf)
+    {
+        uart_ep_ovf = true;
+        uart_fifo_overflows++;
+    }
+    if (!ovf && !uart_ep_full)
+    {
+        uart_ep_full = true;
+        uart_buffer_full_events++;
+    }
+    // A full ring raises an event about every 0.85 ms: one line per second at most.
+    if (!uart_ovf_logged || now - uart_ovf_log_at >= pdMS_TO_TICKS(1000))
+    {
+        uart_ovf_logged = true;
+        uart_ovf_log_at = now;
+        ESP_LOGW(TAG, "UART overflow: %lu FIFO overrun and %lu ring-full episodes so far",
+                 (unsigned long)uart_fifo_overflows, (unsigned long)uart_buffer_full_events);
     }
 }
 
-static void uart_event_task(void* arg)
+typedef enum
 {
-    uart_event_t event;
-    while (1)
-    {
-        if (xQueueReceive(uart_event_queue, &event, portMAX_DELAY) != pdPASS)
-            continue;
+    UART_DRAIN_DONE,      // nothing (more) due
+    UART_DRAIN_MORE,      // UART_DRAIN_FRAMES went out and UART_WAKE_BYTES or more still wait
+    UART_DRAIN_HELD,      // the bytes stay in the ring: low heap, or viewers not ready
+    UART_DRAIN_NO_VIEWER, // nobody to send to: the bridge discards
+    UART_DRAIN_BUSY,      // the bridge held rx_mux: again after a tick
+} uart_drain_t;
 
-        if (event.type == UART_FIFO_OVF)
+// A frame is due at UART_WAKE_BYTES, once the oldest byte has waited UART_WAKE_AGE_MS, or at
+// once if no frame was taken for UART_IDLE_MS (keystroke echo). The bridge wakes the writer by
+// this rule, and the writer takes its first frame by it, so a late or duplicate wake never
+// sends a sliver.
+static bool uart_frame_due(size_t buffered, TickType_t now)
+{
+    if (buffered == 0)
+        return false;
+    if (buffered >= UART_WAKE_BYTES)
+        return true;
+    if (now - (TickType_t)atomic_load(&uart_last_frame) >= pdMS_TO_TICKS(UART_IDLE_MS))
+        return true;
+    return atomic_load(&uart_pending) &&
+           now - (TickType_t)atomic_load(&uart_pending_since) >= pdMS_TO_TICKS(UART_WAKE_AGE_MS);
+}
+
+// The writer's per-session /uart state, by lwIP fd slot. Only the one writer of the mode
+// touches it, so it needs no lock. An entry belongs to the session whose ws_state epoch it
+// holds, and is reset when the fd holds a new session.
+struct uart_lag
+{
+    uint32_t epoch;
+    bool lagging;   // was not ready past the hold cap: loses frames instead of holding the others
+    uint8_t streak; // lagging: ready frames in a row with the ring below UART_LAG_REGATE_RING
+};
+static struct uart_lag uart_lags[CONFIG_LWIP_MAX_SOCKETS];
+
+struct uart_viewer
+{
+    int fd;
+    int slot;
+    uint32_t epoch;
+    ws_ready_t ready;
+};
+
+static uint32_t uart_epoch(int fd)
+{
+    struct ws_owed owed;
+    ws_state_owed(fd, &owed); // for the epoch only: a /uart session is never owed anything
+    return owed.epoch;
+}
+
+// Our context, not blocked, an open WebSocket.
+static bool uart_is_viewer(httpd_handle_t server, int fd)
+{
+    return httpd_sess_get_ctx(server, fd) == &uart_ws_session && !ws_state_blocked(fd) &&
+           httpd_ws_get_fd_info(server, fd) == HTTPD_WS_CLIENT_WEBSOCKET;
+}
+
+static size_t uart_viewers(httpd_handle_t server, struct uart_viewer* v)
+{
+    int fds[MAX_CLIENT];
+    size_t clients = MAX_CLIENT;
+    if (httpd_get_client_list(server, &clients, fds) != ESP_OK)
+        return 0;
+    size_t n = 0;
+    for (size_t i = 0; i < clients; ++i)
+    {
+        int slot;
+        if (!uart_is_viewer(server, fds[i]) || !ws_state_slot(fds[i], &slot))
+            continue;
+        uint32_t epoch = uart_epoch(fds[i]);
+        if (uart_lags[slot].epoch != epoch)
+            uart_lags[slot] = (struct uart_lag){.epoch = epoch}; // a new session: it gates
+        v[n++] = (struct uart_viewer){.fd = fds[i], .slot = slot, .epoch = epoch, .ready = WS_READY};
+    }
+    return n;
+}
+
+// The session v was collected for still holds its fd (HTTP: httpd runs above the writer and
+// may have closed it, and a new session may hold the fd by now).
+static bool uart_viewer_still(httpd_handle_t server, const struct uart_viewer* v)
+{
+    return uart_is_viewer(server, v->fd) && uart_epoch(v->fd) == v->epoch;
+}
+
+// One viewer did not get n bytes of a frame.
+static void uart_viewer_lost(size_t n)
+{
+    uart_viewer_drop_bytes += n;
+    __atomic_fetch_add(&uart_queue_drops, 1, __ATOMIC_RELAXED);
+}
+
+// Writer only. A hold for viewers that are not ready lasts from the first such HELD drain until a
+// frame is read (a low-heap hold does not start or end it).
+static bool uart_holding;
+static TickType_t uart_hold_since;
+
+static uart_drain_t uart_hold(TickType_t now)
+{
+    if (!uart_holding)
+    {
+        uart_holding = true;
+        uart_hold_since = now;
+    }
+    return UART_DRAIN_HELD;
+}
+
+// Sends up to max_frames frames from the driver ring to every /uart viewer: one write per
+// viewer per frame (one TLS record over HTTPS). The only /uart writer of each mode: the httpd
+// task over HTTPS, uart_writer over HTTP. The ring is read only once the frame can go out, so
+// what cannot go out yet waits in the ring, where the bridge sheds it (counted) if it fills.
+static uart_drain_t uart_drain(httpd_handle_t server, unsigned max_frames)
+{
+    // The bridge found no viewer and discarded since the last drain: a hold in progress ended
+    // then. Without this a viewer that connects later would inherit the stale hold (no
+    // UART_HOLD_MS_MAX grace before it is marked lagging).
+    if (atomic_exchange(&uart_viewers_lost, false))
+        uart_holding = false;
+    for (unsigned f = 0; f < max_frames; ++f)
+    {
+        TickType_t now = xTaskGetTickCount();
+        size_t buffered = 0;
+        uart_get_buffered_data_len(UART_NUM, &buffered);
+        // The first frame once one is due, the next ones only while a wake's worth waits.
+        if (f == 0 ? !uart_frame_due(buffered, now) : buffered < UART_WAKE_BYTES)
         {
-            uart_fifo_overflows++;
-            ESP_LOGW(TAG, "UART HW FIFO Overflow");
-            uart_flush_input(UART_NUM);
-            xQueueReset(uart_event_queue);
+            if (buffered == 0)
+                uart_holding = false;
+            return UART_DRAIN_DONE;
         }
-        else if (event.type == UART_BUFFER_FULL)
+        struct uart_viewer v[MAX_CLIENT];
+        size_t n = uart_viewers(server, v);
+        if (n == 0)
         {
-            uart_buffer_full_events++;
-            ESP_LOGW(TAG, "UART ring buffer full");
-            uart_flush_input(UART_NUM);
-            xQueueReset(uart_event_queue);
+            uart_holding = false;
+            return UART_DRAIN_NO_VIEWER;
+        }
+        // Global, never a per-viewer skip, and no stall clock: the heap is no viewer's fault, so
+        // it does not use up their hold grace either.
+        if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < UART_MIN_FREE_HEAP)
+            return UART_DRAIN_HELD;
+
+        // HTTPS: each viewer must take the frame without blocking. HTTP writes block instead
+        // (see "Never block on a WebSocket write"), so every viewer is ready.
+        size_t ready = 0;
+        bool gate = false; // a viewer that is not lagging is not ready
+        for (size_t i = 0; i < n; ++i)
+        {
+            if (ws_https)
+                v[i].ready = ws_write_ready(v[i].fd, true, WS_TLS_UART_MIN_BLOCK);
+            if (v[i].ready == WS_READY)
+                ready++;
+            else if (!uart_lags[v[i].slot].lagging)
+                gate = true;
+        }
+        bool young = !uart_holding || now - uart_hold_since < pdMS_TO_TICKS(UART_HOLD_MS_MAX);
+        if (ready == 0 || (gate && buffered < UART_HOLD_RING_MAX && young))
+        {
+            // The stall clock of a not-ready viewer runs, so a dead one alone is still closed
+            // after WS_STALL_CLOSE_MS while the bridge sheds.
+            for (size_t i = 0; i < n; ++i)
+                if (v[i].ready != WS_READY)
+                    ws_stall_clock(server, v[i].fd, v[i].ready, false);
+            return uart_hold(now);
+        }
+
+        uint8_t* payload = uart_frame + UART_FRAME_HEAD;
+        int got = uart_read_bytes(UART_NUM, payload, buffered < UART_FRAME_MAX ? buffered : UART_FRAME_MAX, 0);
+        if (got < 0)
+            return UART_DRAIN_BUSY; // rx_mux: the bridge is reading. Busy, not empty.
+        uart_holding = false;
+        if (got == 0)
+            return UART_DRAIN_DONE;
+        // Past the cap a not-ready viewer stops holding the ready ones: it is marked lagging,
+        // and loses this frame. Only once a frame was read: a BUSY or empty run sends nothing,
+        // so it changes no viewer's gating.
+        for (size_t i = 0; i < n; ++i)
+        {
+            struct uart_lag* lag = &uart_lags[v[i].slot];
+            if (v[i].ready != WS_READY && !lag->lagging)
+            {
+                lag->lagging = true;
+                lag->streak = 0;
+                uart_lagging_marks++;
+            }
+        }
+        uart_count_read(got);
+        uart_frame_bytes += (uint32_t)got; // right after the read count, as uart_discard does
+        atomic_store(&uart_last_frame, now);
+
+        uint8_t h[UART_FRAME_HEAD];
+        size_t head = ws_frame_header(h, got); // right before the payload: one write
+        memcpy(payload - head, h, head);
+        const char* buf = (const char*)payload - head;
+        size_t len = head + got;
+        static uint32_t rotate;
+        size_t first = rotate++ % n; // a different viewer goes first every frame
+        for (size_t k = 0; k < n; ++k)
+        {
+            struct uart_viewer* p = &v[(first + k) % n];
+            struct uart_lag* lag = &uart_lags[p->slot];
+            if (p->ready != WS_READY)
+            {
+                lag->streak = 0;
+                uart_viewer_lost(got);
+                ws_write_skipped(server, p->fd, p->ready, false); // counted; the stall clock runs
+                continue;
+            }
+            if (!ws_https && !uart_viewer_still(server, p))
+            {
+                uart_viewer_lost(got); // closed or replaced meanwhile: never written
+                continue;
+            }
+            int w = httpd_socket_send(server, p->fd, buf, len, 0);
+            if (w < 0 || (size_t)w != len)
+            {
+                // A short or failed write closes the session, with no retry: a retry could put
+                // httpd's own frames (a pong) inside this one. Never a session that took the fd
+                // over during the write.
+                uart_viewer_lost(got);
+                if (ws_https || uart_viewer_still(server, p))
+                    ws_session_failed(server, p->fd, "ws-uart", w < 0 ? ESP_FAIL : ESP_ERR_INVALID_SIZE);
+                continue;
+            }
+            ws_state_write_done(p->fd); // the stall is over
+            if (lag->lagging)
+            {
+                if (buffered >= UART_LAG_REGATE_RING)
+                    lag->streak = 0;
+                else if (++lag->streak >= UART_LAG_REGATE_FRAMES)
+                {
+                    lag->lagging = false;
+                    lag->streak = 0;
+                }
+            }
+        }
+    }
+    size_t left = 0;
+    uart_get_buffered_data_len(UART_NUM, &left);
+    return left >= UART_WAKE_BYTES ? UART_DRAIN_MORE : UART_DRAIN_DONE;
+}
+
+// HTTPS: the drain, in the httpd task. Static, and its argument is only its sequence number
+// (no allocation), so a duplicate only drains what is there.
+static void uart_drain_work(void* arg)
+{
+    unsigned seq = (unsigned)(uintptr_t)arg;
+    // First: from now on a wake needs a new item. Only httpd writes started, so a plain max();
+    // an older (stale) item leaves it as it is.
+    if ((int32_t)(seq - atomic_load(&uart_started_seq)) > 0)
+        atomic_store(&uart_started_seq, seq);
+    atomic_store(&uart_report, (unsigned)uart_drain(uart_server, UART_DRAIN_FRAMES) + 1);
+}
+
+// HTTPS: drain items queued and not started yet. The bridge stores an item's number before it
+// queues it (httpd may start it before httpd_queue_work returns) and takes it back if the queue
+// failed, so started never passes queued; a diagnostics read of the two can still see that for
+// an instant, hence the clamp.
+static unsigned uart_kick_in_flight(void)
+{
+    int32_t d = (int32_t)(atomic_load(&uart_queued_seq) - atomic_load(&uart_started_seq));
+    return d > 0 ? (unsigned)d : 0;
+}
+
+// HTTP: wakes the writer. NULL-safe: xTaskNotifyGive(NULL) trips configASSERT.
+static void uart_wake_writer(void)
+{
+    TaskHandle_t task = uart_writer_handle;
+    if (task)
+        xTaskNotifyGive(task);
+}
+
+// HTTP: the /uart writer, below httpd.
+static void uart_writer(void* arg)
+{
+    httpd_handle_t server = arg;
+    for (;;)
+    {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(UART_WRITER_IDLE_MS));
+        uart_drain_t r;
+        do
+            r = uart_drain(server, UART_DRAIN_FRAMES);
+        while (r == UART_DRAIN_MORE); // each further frame is >= UART_WAKE_BYTES: paced by the UART
+        atomic_store(&uart_report, (unsigned)r + 1);
+        // Never spins: a held drain waits UART_HOLD_RETRY_MS, a busy one a tick. Wakes that
+        // arrive meanwhile are kept by the notification count.
+        if (r == UART_DRAIN_HELD || r == UART_DRAIN_NO_VIEWER)
+            vTaskDelay(pdMS_TO_TICKS(UART_HOLD_RETRY_MS));
+        else if (r == UART_DRAIN_BUSY)
+            vTaskDelay(1);
+    }
+}
+
+// Reads and discards up to len of the oldest buffered bytes, each chunk counted in bucket as it
+// is read. Returns how many.
+static size_t uart_discard(size_t len, volatile uint32_t* bucket)
+{
+    size_t done = 0;
+    while (done < len)
+    {
+        size_t want = len - done < sizeof(uart_scratch) ? len - done : sizeof(uart_scratch);
+        int got = uart_read_bytes(UART_NUM, uart_scratch, want, 0);
+        if (got <= 0)
+            break; // -1: the writer is reading (next pass); 0: empty
+        uart_count_read(got);
+        *bucket += (uint32_t)got;
+        done += (size_t)got;
+    }
+    return done;
+}
+
+// The reader side: it never writes a socket. It watches the ring, counts overflow episodes,
+// discards when there is no viewer, sheds when the writer is stuck, and wakes the writer when a
+// frame is due (HTTP: a notification; HTTPS: a kick of the drain work item into httpd).
+static void uart_bridge(void* arg)
+{
+    httpd_handle_t server = arg;
+    bool wait = false; // no wake before wait_at: the last drain held, or a kick failed
+    TickType_t wait_at = 0;
+    TickType_t kicked_at = 0;     // HTTPS: when the last drain item was queued
+    unsigned seen_last_frame = 0; // uart_last_frame when uart_pending_since was set
+    for (;;)
+    {
+        size_t buffered = 0;
+        uart_event_t ev;
+        uart_get_buffered_data_len(UART_NUM, &buffered);
+        if (buffered == 0)
+        {
+            // Empty: sleep until the driver posts an event (UART_DATA after 120 B or 10 idle
+            // symbols), with a timeout in case that event was dropped.
+            if (xQueueReceive(uart_event_queue, &ev, pdMS_TO_TICKS(UART_BRIDGE_IDLE_MS)) == pdPASS)
+                uart_note_event(&ev, xTaskGetTickCount());
+        }
+        else
+        {
+            vTaskDelay(1); // data waits: one pass per tick, never a spin
+        }
+        TickType_t now = xTaskGetTickCount();
+        while (xQueueReceive(uart_event_queue, &ev, 0) == pdPASS)
+            uart_note_event(&ev, now);
+
+        uart_get_buffered_data_len(UART_NUM, &buffered);
+        unsigned report = atomic_exchange(&uart_report, 0);
+        if (report == UART_DRAIN_HELD + 1 || report == UART_DRAIN_NO_VIEWER + 1)
+        {
+            wait = true;
+            wait_at = now + pdMS_TO_TICKS(UART_HOLD_RETRY_MS);
+        }
+        else if (wait && due(now, wait_at))
+            wait = false; // never left set: due() is wrap-safe only within 2^31 ticks
+
+        if (buffered == 0)
+        {
+            atomic_store(&uart_pending, false);
+            continue;
+        }
+        if (uart_websocket_client_connected(server) == UART_SEEN_NONE)
+        {
+            // No viewer: read and discard (no history).
+            if (uart_discard(buffered, &uart_no_viewer_bytes))
+            {
+                atomic_store(&uart_viewers_lost, true); // a hold in progress ended: the next drain clears it
+            }
+            atomic_store(&uart_pending, false);
+            continue;
+        }
+        unsigned last_frame = atomic_load(&uart_last_frame);
+        if (!atomic_load(&uart_pending) || last_frame != seen_last_frame)
+        {
+            // Approximate after a frame: the bytes left behind it are taken as new.
+            atomic_store(&uart_pending_since, now);
+            atomic_store(&uart_pending, true);
+            seen_last_frame = last_frame;
+        }
+        // No frame for UART_SHED_STALL_MS and the ring nearly full: shed the oldest bytes,
+        // counted, before RX interrupts go off and the FIFO overruns uncounted.
+        if (buffered >= UART_SHED_HIGH &&
+            now - (TickType_t)atomic_load(&uart_last_frame) >= pdMS_TO_TICKS(UART_SHED_STALL_MS))
+        {
+            size_t n = uart_discard(buffered - UART_SHED_LOW, &uart_shed_bytes);
+            if (n)
+            {
+                __atomic_fetch_add(&uart_queue_drops, 1, __ATOMIC_RELAXED);
+                buffered -= n;
+            }
+        }
+
+        if (wait && !due(now, wait_at))
+            continue; // a held drain is retried after UART_HOLD_RETRY_MS, not every tick
+        if (!atomic_exchange(&uart_wake_req, false) && !uart_frame_due(buffered, now))
+            continue;
+        wait = false;
+        if (!ws_https)
+        {
+            uart_wake_writer();
+            continue;
+        }
+        // At most one item in flight, two once one has waited UART_KICK_REARM_MS (its datagram
+        // was lost, or httpd is stuck); past that one more per UART_KICK_FALLBACK_MS, in case
+        // every datagram in flight was lost. A duplicate only drains what is there.
+        unsigned in_flight = uart_kick_in_flight();
+        TickType_t age = now - kicked_at;
+        bool rearm = in_flight == 1 && age >= pdMS_TO_TICKS(UART_KICK_REARM_MS);
+        bool fallback = in_flight >= 2 && age >= pdMS_TO_TICKS(UART_KICK_FALLBACK_MS);
+        if (in_flight && !rearm && !fallback)
+            continue; // queued and not started: it reads the ring when it runs
+        unsigned seq = atomic_load(&uart_queued_seq) + 1;
+        atomic_store(&uart_queued_seq, seq); // before the queue: httpd may start the item first
+        if (httpd_queue_work(server, uart_drain_work, (void*)(uintptr_t)seq) == ESP_OK)
+        {
+            kicked_at = now;
+        }
+        else
+        {
+            atomic_store(&uart_queued_seq, seq - 1); // not queued: nobody can start it
+            uart_kick_failures++;
+            wait = true;
+            wait_at = now + pdMS_TO_TICKS(UART_KICK_RETRY_MS);
         }
     }
 }
@@ -1074,6 +1422,17 @@ static esp_err_t ws_post_handshake_cb(httpd_req_t* req)
     (void)req;
     ws_state_request_pass();
     wake_status_sender();
+    return ESP_OK;
+}
+
+// /uart, in the httpd task right after ws_handshake_done is set: the next drain sees the new
+// viewer. It only wakes; httpd fails the request unless this returns ESP_OK.
+static esp_err_t uart_post_handshake_cb(httpd_req_t* req)
+{
+    (void)req;
+    atomic_store(&uart_wake_req, true); // the bridge wakes the writer (HTTPS: kicks) on its next pass
+    if (!ws_https)
+        uart_wake_writer();
     return ESP_OK;
 }
 
@@ -1164,25 +1523,32 @@ void register_ws_endpoint(httpd_handle_t server)
         .user_ctx = &uart_ws_session,
         .is_websocket = true,
         .ws_pre_handshake_cb = ws_pre_handshake_cb,
+        .ws_post_handshake_cb = uart_post_handshake_cb,
     };
     httpd_register_uri_handler(server, &ws);
     httpd_register_uri_handler(server, &uart_ws);
 
-    uart_ws_queue = xQueueCreate(UART_WS_QUEUE_LENGTH, sizeof(struct ws_message));
     // No status queue: events and sensor samples are held in ws_state.c's lanes.
-    status_sender = (struct ws_sender_config){
-        .queue = NULL, .server = server, .uart_stream = false, .name = "ws-status"};
-    uart_sender = (struct ws_sender_config){
-        .queue = uart_ws_queue, .server = server, .uart_stream = true, .name = "ws-uart"};
-    // Stack sizes leave 1.3-2.3 KB above the deepest use measured while page loads, both
-    // streams and an SBC boot log were running and send failures were logged
-    // (sender ~1.7 KB, polling ~0.7 KB).
-    xTaskCreate(uart_polling_task, "uart_polling_task", 1024 * 3, server, 8, NULL);
+    status_sender = (struct ws_sender_config){.server = server, .name = "ws-status"};
+    // The stack size leaves 1.3-2.3 KB above the deepest use measured while page loads, both
+    // streams and an SBC boot log were running and send failures were logged (~1.7 KB).
     TaskHandle_t task = NULL;
     xTaskCreate(ws_status_sender_task, "ws_status_sender", 1024 * 3, &status_sender, 9, &task);
     status_sender_task = task;
-    xTaskCreate(ws_sender_task, "ws_uart_sender", 1024 * 3, &uart_sender, 9, NULL);
-    xTaskCreate(uart_event_task, "uart_event_task", 1024 * 2, NULL, 10, NULL);
+
+    // /uart: the server handle and the writer exist before the bridge, which preempts this
+    // task as soon as it is created (priority 12 over HTTPS) and wakes the writer.
+    uart_server = server;
+    if (!ws_https)
+    {
+        TaskHandle_t writer = NULL;
+        if (xTaskCreate(uart_writer, "uart_writer", UART_WRITER_STACK, server, UART_WRITER_PRIO, &writer) != pdPASS)
+            ESP_LOGE(TAG, "uart_writer not created: /uart sends nothing");
+        uart_writer_handle = writer;
+    }
+    if (xTaskCreate(uart_bridge, "uart_bridge", UART_BRIDGE_STACK, server,
+                    ws_https ? UART_BRIDGE_PRIO_HTTPS : UART_BRIDGE_PRIO_HTTP, NULL) != pdPASS)
+        ESP_LOGE(TAG, "uart_bridge not created: the UART ring is not read");
 }
 
 void push_data_to_ws(const uint8_t* data, size_t len)
@@ -1209,18 +1575,24 @@ void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics)
         return;
 
     memset(diagnostics, 0, sizeof(*diagnostics));
-    if (uart_ws_queue)
-    {
-        diagnostics->queue_depth = uxQueueMessagesWaiting(uart_ws_queue);
-        diagnostics->queue_capacity = diagnostics->queue_depth + uxQueueSpacesAvailable(uart_ws_queue);
-    }
     if (uart_event_queue)
+    {
         uart_get_buffered_data_len(UART_NUM, &diagnostics->uart_buffered_bytes);
+        // The /uart queue is the driver ring: bytes waiting, and its size.
+        diagnostics->queue_depth = diagnostics->uart_buffered_bytes;
+        diagnostics->queue_capacity = UART_RX_BUFFER_SIZE;
+    }
 
     diagnostics->uart_received_bytes = uart_received_bytes;
     diagnostics->uart_fifo_overflows = uart_fifo_overflows;
     diagnostics->uart_buffer_full_events = uart_buffer_full_events;
     diagnostics->uart_queue_drops = uart_queue_drops;
+    diagnostics->uart_frame_bytes = uart_frame_bytes;
+    diagnostics->uart_shed_bytes = uart_shed_bytes;
+    diagnostics->uart_no_viewer_bytes = uart_no_viewer_bytes;
+    diagnostics->uart_viewer_drop_bytes = uart_viewer_drop_bytes;
+    diagnostics->uart_lagging_marks = uart_lagging_marks;
+    diagnostics->uart_kick_failures = uart_kick_failures;
     diagnostics->websocket_send_failures = websocket_send_failures;
     diagnostics->websocket_close_failures = websocket_close_failures;
     diagnostics->websocket_close_retries = websocket_close_retries;
@@ -1243,7 +1615,7 @@ void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics)
     diagnostics->status_event_backlog_max_bytes = lanes.backlog_max_bytes;
     diagnostics->status_batches = status_batches;
     diagnostics->status_stall_closes = status_stall_closes;
-    diagnostics->uart_https_pending = atomic_load(&uart_sender.pending);
+    diagnostics->uart_https_pending = uart_kick_in_flight(); // HTTPS: drain items queued, not started
     diagnostics->status_state_frames = state_frames;
     diagnostics->status_state_owed = state_owed;
     diagnostics->status_state_kick_failures = state_kick_failures;

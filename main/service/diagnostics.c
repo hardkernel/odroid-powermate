@@ -16,10 +16,10 @@
 #include "webserver.h"
 #include "wifi.h"
 
-// Holds the largest response: ~1.95 KB with every counter at 10 digits, the longest disconnect
+// Holds the largest response: ~2.14 KB with every counter at 10 digits, the longest disconnect
 // reason and the static IP error (a typical one is ~1.4 KB). Grow it with new keys: a longer
 // response still prints, but into a buffer twice its size.
-#define DIAG_JSON_PREBUFFER 1984
+#define DIAG_JSON_PREBUFFER 2176
 
 static const char* wifi_sta_state_str(wifi_sta_connection_state_t state)
 {
@@ -83,6 +83,12 @@ static esp_err_t diagnostics_get_handler(httpd_req_t* req)
     cJSON_AddNumberToObject(root, "uart_fifo_overflows", ws_diagnostics.uart_fifo_overflows);
     cJSON_AddNumberToObject(root, "uart_buffer_full_events", ws_diagnostics.uart_buffer_full_events);
     cJSON_AddNumberToObject(root, "uart_queue_drops", ws_diagnostics.uart_queue_drops);
+    cJSON_AddNumberToObject(root, "uart_frame_bytes", ws_diagnostics.uart_frame_bytes);
+    cJSON_AddNumberToObject(root, "uart_shed_bytes", ws_diagnostics.uart_shed_bytes);
+    cJSON_AddNumberToObject(root, "uart_no_viewer_bytes", ws_diagnostics.uart_no_viewer_bytes);
+    cJSON_AddNumberToObject(root, "uart_viewer_drop_bytes", ws_diagnostics.uart_viewer_drop_bytes);
+    cJSON_AddNumberToObject(root, "uart_lagging_marks", ws_diagnostics.uart_lagging_marks);
+    cJSON_AddNumberToObject(root, "uart_kick_failures", ws_diagnostics.uart_kick_failures);
     cJSON_AddNumberToObject(root, "status_queue_drops", ws_diagnostics.status_queue_drops);
     cJSON_AddNumberToObject(root, "status_drops_queue_full", ws_diagnostics.status_drops_queue_full);
     cJSON_AddNumberToObject(root, "status_drops_https_pending", ws_diagnostics.status_drops_https_pending);
