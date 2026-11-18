@@ -24,6 +24,7 @@ struct ws_fd_state
     uint32_t sw_sent;   // sw_gen whose outputs were last written to this session, 0 = none
     uint32_t wifi_sent; // wifi_gen last written, 0 = none
     bool blocked;       // a write failed: its close was triggered, write nothing more
+    bool close_retry;   // that close could not be queued: a state pass retries it
 };
 
 static struct ws_fd_state fds[WS_FD_SLOTS];
@@ -110,6 +111,7 @@ void ws_state_session_opened(int fd)
     fds[i].sw_sent = 0;
     fds[i].wifi_sent = 0;
     fds[i].blocked = false;
+    fds[i].close_retry = false;
     portEXIT_CRITICAL(&lock);
 }
 
@@ -142,6 +144,28 @@ bool ws_state_blocked(int fd)
     bool blocked = fds[i].blocked;
     portEXIT_CRITICAL(&lock);
     return blocked;
+}
+
+void ws_state_close_failed(int fd)
+{
+    int i;
+    if (!ws_state_slot(fd, &i))
+        return;
+    portENTER_CRITICAL(&lock);
+    fds[i].close_retry = true;
+    portEXIT_CRITICAL(&lock);
+}
+
+bool ws_state_take_close_retry(int fd)
+{
+    int i;
+    if (!ws_state_slot(fd, &i))
+        return false;
+    portENTER_CRITICAL(&lock);
+    bool retry = fds[i].close_retry;
+    fds[i].close_retry = false;
+    portEXIT_CRITICAL(&lock);
+    return retry;
 }
 
 bool ws_state_owed(int fd, struct ws_owed* o)

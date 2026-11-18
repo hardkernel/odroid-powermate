@@ -54,6 +54,8 @@ typedef struct
     uint32_t status_state_owed;          // /ws sessions still owed state after the last pass
     uint32_t status_state_kick_failures; // HTTPS: queuing the state pass failed
     uint32_t status_state_kick_rearms;   // HTTPS: a queued state pass never ran
+    uint32_t websocket_close_failures;   // closing a failed session could not be queued (retried)
+    uint32_t websocket_close_retries;    // such closes retried
 } websocket_diagnostics_t;
 
 void register_wifi_endpoint(httpd_handle_t server);

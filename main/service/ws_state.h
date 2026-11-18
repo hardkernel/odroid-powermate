@@ -45,6 +45,10 @@ void ws_state_block(int fd);
 void ws_state_unblock(int fd);
 /** True if blocked, and for an fd outside the table. */
 bool ws_state_blocked(int fd);
+/** Closing the session failed synchronously: a later state pass retries it. */
+void ws_state_close_failed(int fd);
+/** Test-and-clear of that retry flag: only one caller gets true. */
+bool ws_state_take_close_retry(int fd);
 
 struct ws_owed
 {

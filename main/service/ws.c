@@ -33,6 +33,7 @@
 #define UART_WS_QUEUE_LENGTH 8
 #define UART_MIN_FREE_HEAP (48 * 1024)
 #define WS_LRU_UPDATE_INTERVAL_MS 1000
+#define WS_NOT_READY_REPOLL_MS 200 // a state pass has work left: run another after this
 #define UART_TX_PIN CONFIG_GPIO_UART_TX
 #define UART_RX_PIN CONFIG_GPIO_UART_RX
 #define UART_DEFAULT_BAUD_RATE 1500000
@@ -82,6 +83,8 @@ static volatile uint32_t uart_buffer_full_events;
 static volatile uint32_t uart_queue_drops;
 static volatile uint32_t status_queue_drops;
 static volatile uint32_t websocket_send_failures;
+static volatile uint32_t websocket_close_failures; // httpd_sess_trigger_close failed (retried)
+static volatile uint32_t websocket_close_retries;  // closes re-triggered by a state pass
 // Status frame drops by cause. status_queue_drops keeps its meaning (queue full, or not
 // handed to httpd); these split it, and add the drops it never counted.
 static volatile uint32_t status_drops_queue_full;    // the status queue was full
@@ -150,6 +153,27 @@ static bool status_websocket_client_connected(httpd_handle_t server)
     return false;
 }
 
+static void wake_status_sender(void)
+{
+    TaskHandle_t task = status_sender_task;
+    if (task)
+        xTaskNotifyGive(task);
+}
+
+// Closes a session that ws.c gave up on. A close that could not be queued is retried by a state
+// pass. One that was queued is never queued again: httpd queues a close by session slot, so a
+// second one could close a new session that reuses the slot.
+static void ws_close_session(httpd_handle_t server, int fd)
+{
+    esp_err_t err = httpd_sess_trigger_close(server, fd);
+    if (err == ESP_OK || err == ESP_ERR_NOT_FOUND)
+        return; // queued, or the session is gone
+    websocket_close_failures++;
+    ws_state_close_failed(fd);
+    ws_state_request_pass();
+    wake_status_sender();
+}
+
 // A write failed: write nothing more to this session and close it. The blocked flag is set
 // before the close is triggered, so no task sees the session as writable again until a new
 // WebSocket handshake on its fd.
@@ -158,7 +182,7 @@ static void ws_session_failed(httpd_handle_t server, int fd, const char* name, e
     websocket_send_failures++;
     ws_state_block(fd);
     ESP_LOGW(TAG, "%s: send failed for fd %d: %s", name, fd, esp_err_to_name(err));
-    httpd_sess_trigger_close(server, fd);
+    ws_close_session(server, fd);
 }
 
 static esp_err_t ws_send_frame(httpd_handle_t server, int fd, uint8_t* data, size_t len, const char* name)
@@ -381,13 +405,6 @@ static void ws_sender_task(void* arg)
 #define WS_KICK_RETRY_MS 20    // HTTPS: queuing the state pass failed, try again after this
 #define WS_KICK_REARM_MS 10000 // HTTPS: a queued state pass has not run: its datagram was lost
 
-static void wake_status_sender(void)
-{
-    TaskHandle_t task = status_sender_task;
-    if (task)
-        xTaskNotifyGive(task);
-}
-
 void ws_publish_switch_state(void)
 {
     ws_state_bump_sw();
@@ -406,8 +423,19 @@ void ws_publish_wifi_status(const uint8_t* frame, size_t len)
     wake_status_sender();
 }
 
-// Writes every registered /ws session the state it is owed. Returns the re-poll interval in ms
-// (0: none). Runs in the status sender over HTTP, in the httpd task over HTTPS.
+// The smaller non-zero interval, or 0 when both are 0.
+static uint32_t min_nonzero(uint32_t a, uint32_t b)
+{
+    if (a == 0)
+        return b;
+    if (b == 0)
+        return a;
+    return a < b ? a : b;
+}
+
+// Writes every registered /ws session the state it is owed, and retries the closes that could
+// not be queued. Returns the re-poll interval in ms (0: none). Runs in the status sender over
+// HTTP, in the httpd task over HTTPS.
 static uint32_t ws_state_pass(httpd_handle_t server)
 {
     int client_fds[MAX_CLIENT];
@@ -416,6 +444,7 @@ static uint32_t ws_state_pass(httpd_handle_t server)
         return 0;
 
     ws_refresh_lru(server, client_fds, clients);
+    uint32_t repoll = 0;
     unsigned owed = 0;
     for (size_t i = 0; i < clients; ++i)
     {
@@ -429,6 +458,25 @@ static uint32_t ws_state_pass(httpd_handle_t server)
             logged = true;
             continue;
         }
+        if (ws_state_take_close_retry(fd)) // one claimer
+        {
+            // Only while the fd still holds that session: one of ours, blocked, and an open
+            // WebSocket. After the client's CLOSE httpd closes the session itself, and a second
+            // queued close could close a new session in the same slot.
+            void* ctx = httpd_sess_get_ctx(server, fd);
+            if ((ctx == &status_ws_session || ctx == &uart_ws_session) && ws_state_blocked(fd) &&
+                httpd_ws_get_fd_info(server, fd) == HTTPD_WS_CLIENT_WEBSOCKET)
+            {
+                websocket_close_retries++;
+                esp_err_t err = httpd_sess_trigger_close(server, fd);
+                if (err != ESP_OK && err != ESP_ERR_NOT_FOUND)
+                {
+                    ws_state_close_failed(fd);
+                    repoll = min_nonzero(repoll, WS_NOT_READY_REPOLL_MS);
+                }
+            }
+            continue;
+        }
         if (httpd_sess_get_ctx(server, fd) != &status_ws_session || ws_state_blocked(fd))
             continue;
         if (httpd_ws_get_fd_info(server, fd) != HTTPD_WS_CLIENT_WEBSOCKET)
@@ -439,7 +487,7 @@ static uint32_t ws_state_pass(httpd_handle_t server)
             owed++;
     }
     state_owed = owed;
-    return 0;
+    return repoll;
 }
 
 // HTTPS: the state pass, in the httpd task. Static and without an argument, so a duplicate is
@@ -835,6 +883,8 @@ void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics)
     diagnostics->uart_queue_drops = uart_queue_drops;
     diagnostics->status_queue_drops = status_queue_drops;
     diagnostics->websocket_send_failures = websocket_send_failures;
+    diagnostics->websocket_close_failures = websocket_close_failures;
+    diagnostics->websocket_close_retries = websocket_close_retries;
     diagnostics->status_drops_queue_full = status_drops_queue_full;
     diagnostics->status_drops_https_pending = status_drops_https_pending;
     diagnostics->status_drops_ctrl_queue = status_drops_ctrl_queue;

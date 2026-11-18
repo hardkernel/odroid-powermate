@@ -96,6 +96,8 @@ static esp_err_t diagnostics_get_handler(httpd_req_t* req)
     cJSON_AddNumberToObject(root, "status_state_owed", ws_diagnostics.status_state_owed);
     cJSON_AddNumberToObject(root, "status_state_kick_failures", ws_diagnostics.status_state_kick_failures);
     cJSON_AddNumberToObject(root, "status_state_kick_rearms", ws_diagnostics.status_state_kick_rearms);
+    cJSON_AddNumberToObject(root, "websocket_close_failures", ws_diagnostics.websocket_close_failures);
+    cJSON_AddNumberToObject(root, "websocket_close_retries", ws_diagnostics.websocket_close_retries);
 
     wifi_sta_diagnostics_t wifi_diagnostics;
     wifi_get_sta_diagnostics(&wifi_diagnostics);
