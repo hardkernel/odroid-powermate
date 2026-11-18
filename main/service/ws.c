@@ -128,21 +128,15 @@ static volatile uint32_t uart_received_bytes;
 static volatile uint32_t uart_fifo_overflows;
 static volatile uint32_t uart_buffer_full_events;
 static volatile uint32_t uart_queue_drops;
-static volatile uint32_t status_queue_drops;
 static volatile uint32_t websocket_send_failures;
 static volatile uint32_t websocket_close_failures; // httpd_sess_trigger_close failed (retried)
 static volatile uint32_t websocket_close_retries;  // closes re-triggered by a state pass
 static volatile uint32_t websocket_not_ready_skips; // writes skipped: the socket was not writable
 static volatile uint32_t websocket_heap_skips;      // HTTPS writes skipped: no heap for the TLS record
 static volatile uint32_t websocket_stall_closes;    // sessions closed after WS_STALL_CLOSE_MS not ready
+static volatile uint32_t status_stall_closes;       // /ws sessions among them
+static volatile uint32_t status_batches;            // status writes (one send, one TLS record each)
 static bool ws_https; // webserver_is_https(), set by register_ws_endpoint
-// Status frame drops by cause. Their drop points are gone: events and sensor samples are held in
-// ws_state.c's lanes until sent, so these stay 0.
-static volatile uint32_t status_drops_queue_full;
-static volatile uint32_t status_drops_https_pending;
-static volatile uint32_t status_drops_no_memory;
-static volatile uint32_t status_drops_ctrl_queue;
-static volatile uint32_t status_sw_drops;
 // Switch and Wi-Fi state frames (see ws_state.h).
 static volatile uint32_t state_frames;        // state frames written
 static volatile uint32_t state_owed;          // gauge: /ws sessions still owed state after the last pass
@@ -276,9 +270,11 @@ static void count_write_skip(ws_ready_t ready)
         websocket_not_ready_skips++;
 }
 
-static void stall_close(httpd_handle_t server, int fd, bool heap)
+static void stall_close(httpd_handle_t server, int fd, bool heap, bool status)
 {
     websocket_stall_closes++;
+    if (status)
+        status_stall_closes++;
     ws_state_block(fd);
     ESP_LOGW(TAG, "fd %d not ready for %d s (%s): closing it", fd, WS_STALL_CLOSE_MS / 1000,
              heap ? "TLS heap" : "not writable");
@@ -289,7 +285,8 @@ static void stall_close(httpd_handle_t server, int fd, bool heap)
 // closed: a socket that cannot take TCP_SNDLOWAT bytes in that time is dead in practice. A heap
 // shortage is global, so of the sessions stalled for heap only, one is closed per
 // WS_HEAP_CLOSE_GAP_MS: each close frees a TLS session (~4 KB), and the next pass re-checks.
-static void ws_write_skipped(httpd_handle_t server, int fd, ws_ready_t ready)
+// status: fd is a /ws session (for the diagnostics only).
+static void ws_write_skipped(httpd_handle_t server, int fd, ws_ready_t ready, bool status)
 {
     // Heap stalls happen only over HTTPS, so these are used by the httpd task only.
     static TickType_t last_heap_close;
@@ -303,11 +300,11 @@ static void ws_write_skipped(httpd_handle_t server, int fd, ws_ready_t ready)
         return;
     if (!heap)
     {
-        stall_close(server, fd, false);
+        stall_close(server, fd, false, status);
     }
     else if (!have_heap_close || now - last_heap_close >= pdMS_TO_TICKS(WS_HEAP_CLOSE_GAP_MS))
     {
-        stall_close(server, fd, true);
+        stall_close(server, fd, true, status);
         last_heap_close = now;
         have_heap_close = true;
     }
@@ -366,7 +363,7 @@ static void ws_broadcast(const struct ws_sender_config* config, const struct ws_
         if (ready != WS_READY)
         {
             // Lost for this client only.
-            ws_write_skipped(server, fd, ready);
+            ws_write_skipped(server, fd, ready, false);
             uart_queue_drops++;
             continue;
         }
@@ -713,6 +710,7 @@ static void ws_commit_batch(int fd, const struct ws_batch_plan* plan)
         ws_state_mark_wifi(fd, plan->epoch, plan->wifi_gen);
         state_frames++;
     }
+    status_batches++;
 }
 
 typedef enum
@@ -736,7 +734,7 @@ static ws_send_t ws_send_owed(httpd_handle_t server, int fd)
         ws_ready_t ready = ws_write_ready(fd, ws_https, WS_TLS_WRITE_MIN_BLOCK);
         if (ready != WS_READY)
         {
-            ws_write_skipped(server, fd, ready); // stays owed, cursors untouched
+            ws_write_skipped(server, fd, ready, true); // stays owed, cursors untouched
             return WS_SEND_NOT_READY;
         }
         struct ws_batch_plan plan;
@@ -1223,22 +1221,28 @@ void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics)
     diagnostics->uart_fifo_overflows = uart_fifo_overflows;
     diagnostics->uart_buffer_full_events = uart_buffer_full_events;
     diagnostics->uart_queue_drops = uart_queue_drops;
-    diagnostics->status_queue_drops = status_queue_drops;
     diagnostics->websocket_send_failures = websocket_send_failures;
     diagnostics->websocket_close_failures = websocket_close_failures;
     diagnostics->websocket_close_retries = websocket_close_retries;
     diagnostics->websocket_not_ready_skips = websocket_not_ready_skips;
     diagnostics->websocket_heap_skips = websocket_heap_skips;
     diagnostics->websocket_stall_closes = websocket_stall_closes;
-    diagnostics->status_drops_queue_full = status_drops_queue_full;
-    diagnostics->status_drops_https_pending = status_drops_https_pending;
-    diagnostics->status_drops_ctrl_queue = status_drops_ctrl_queue;
-    diagnostics->status_drops_no_memory = status_drops_no_memory;
+    // The status queue and its drop points are gone (events and sensor samples are held in
+    // ws_state.c's lanes until sent): status_drops_queue_full, _https_pending, _ctrl_queue,
+    // _no_memory, status_sw_drops and status_https_pending stay 0. status_queue_drops now
+    // reports the events sessions missed, as the page and pmtui show it as status drops.
     struct ws_lane_stats lanes;
     ws_state_lane_stats(&lanes);
+    diagnostics->status_queue_drops = lanes.events_missed;
     diagnostics->status_drops_no_client = lanes.ev_no_session;
-    diagnostics->status_sw_drops = status_sw_drops;
-    diagnostics->status_https_pending = atomic_load(&status_sender.pending);
+    diagnostics->status_events_stored = lanes.ev_stored;
+    diagnostics->status_events_missed = lanes.events_missed;
+    diagnostics->status_events_lost_on_close = lanes.events_lost_on_close;
+    diagnostics->status_sensor_merged = lanes.sensor_merged;
+    diagnostics->status_event_backlog_max = lanes.backlog_max;
+    diagnostics->status_event_backlog_max_bytes = lanes.backlog_max_bytes;
+    diagnostics->status_batches = status_batches;
+    diagnostics->status_stall_closes = status_stall_closes;
     diagnostics->uart_https_pending = atomic_load(&uart_sender.pending);
     diagnostics->status_state_frames = state_frames;
     diagnostics->status_state_owed = state_owed;

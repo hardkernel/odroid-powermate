@@ -16,10 +16,10 @@
 #include "webserver.h"
 #include "wifi.h"
 
-// Holds the largest response: ~1.6 KB with every counter at 10 digits, the longest disconnect
-// reason and the static IP error (a typical one is ~1.2 KB). Grow it with new keys: a longer
+// Holds the largest response: ~1.95 KB with every counter at 10 digits, the longest disconnect
+// reason and the static IP error (a typical one is ~1.4 KB). Grow it with new keys: a longer
 // response still prints, but into a buffer twice its size.
-#define DIAG_JSON_PREBUFFER 1664
+#define DIAG_JSON_PREBUFFER 1984
 
 static const char* wifi_sta_state_str(wifi_sta_connection_state_t state)
 {
@@ -101,6 +101,14 @@ static esp_err_t diagnostics_get_handler(httpd_req_t* req)
     cJSON_AddNumberToObject(root, "websocket_not_ready_skips", ws_diagnostics.websocket_not_ready_skips);
     cJSON_AddNumberToObject(root, "websocket_heap_skips", ws_diagnostics.websocket_heap_skips);
     cJSON_AddNumberToObject(root, "websocket_stall_closes", ws_diagnostics.websocket_stall_closes);
+    cJSON_AddNumberToObject(root, "status_events_stored", ws_diagnostics.status_events_stored);
+    cJSON_AddNumberToObject(root, "status_events_missed", ws_diagnostics.status_events_missed);
+    cJSON_AddNumberToObject(root, "status_events_lost_on_close", ws_diagnostics.status_events_lost_on_close);
+    cJSON_AddNumberToObject(root, "status_sensor_merged", ws_diagnostics.status_sensor_merged);
+    cJSON_AddNumberToObject(root, "status_event_backlog_max", ws_diagnostics.status_event_backlog_max);
+    cJSON_AddNumberToObject(root, "status_event_backlog_max_bytes", ws_diagnostics.status_event_backlog_max_bytes);
+    cJSON_AddNumberToObject(root, "status_batches", ws_diagnostics.status_batches);
+    cJSON_AddNumberToObject(root, "status_stall_closes", ws_diagnostics.status_stall_closes);
 
     wifi_sta_diagnostics_t wifi_diagnostics;
     wifi_get_sta_diagnostics(&wifi_diagnostics);

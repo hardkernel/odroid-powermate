@@ -37,16 +37,17 @@ typedef struct
     uint32_t uart_fifo_overflows;
     uint32_t uart_buffer_full_events;
     uint32_t uart_queue_drops;
-    uint32_t status_queue_drops;
+    uint32_t status_queue_drops; // = status_events_missed (there is no status queue)
     uint32_t websocket_send_failures;
-    // Status frame drops by cause, and how many of them were sw_status.
+    // Status frame drops by cause. Only status_drops_no_client has a drop point left: events
+    // stored while no /ws session was open. The others are always 0.
     uint32_t status_drops_queue_full;
     uint32_t status_drops_https_pending;
     uint32_t status_drops_ctrl_queue;
     uint32_t status_drops_no_memory;
     uint32_t status_drops_no_client;
     uint32_t status_sw_drops;
-    // HTTPS: frames handed to the httpd task and not sent yet (0 over HTTP).
+    // HTTPS: UART chunks handed to the httpd task and not sent yet (0 over HTTP; status: always 0).
     uint32_t status_https_pending;
     uint32_t uart_https_pending;
     // Switch and Wi-Fi state frames (never queued).
@@ -59,6 +60,15 @@ typedef struct
     uint32_t websocket_not_ready_skips;  // writes skipped (per client): the socket was not writable
     uint32_t websocket_heap_skips;       // HTTPS writes skipped (per client): no heap for the record
     uint32_t websocket_stall_closes;     // sessions closed after 20 s of not being ready
+    // The /ws event and sensor lanes. "Per session" counts add up over every /ws session.
+    uint32_t status_events_stored;           // events stored since boot
+    uint32_t status_events_missed;           // per session: evicted before it got them (sent a marker)
+    uint32_t status_events_lost_on_close;    // per session: not delivered when it ended (any reason)
+    uint32_t status_sensor_merged;           // per session: samples skipped, more than 3 were pending
+    uint32_t status_event_backlog_max;       // the most events one session had pending (evicted too)
+    uint32_t status_event_backlog_max_bytes; // the most bytes of held events one session had pending
+    uint32_t status_batches;                 // status writes (one send, one TLS record each)
+    uint32_t status_stall_closes;            // /ws sessions closed after 20 s of not being ready
 } websocket_diagnostics_t;
 
 void register_wifi_endpoint(httpd_handle_t server);

@@ -149,15 +149,22 @@ size_t ws_state_copy_event(uint32_t seq, uint8_t* buf, size_t size, bool* gone);
 /** Copies sensor sample seq into buf. Returns its length, or 0 if it is no longer held (or not
  *  yet stored) or longer than size. */
 size_t ws_state_copy_sensor(uint32_t seq, uint8_t* buf, size_t size);
-/** A write that carried the frames up to these cursors was accepted whole. ev_missed: events a
- *  marker in that write reported; sensor_merged: samples skipped. Ignored (false) unless the fd
- *  still holds the open session of epoch. */
-bool ws_state_lane_commit(int fd, uint32_t epoch, uint32_t ev_next, uint32_t ev_missed, uint32_t sensor_next,
-                          uint32_t sensor_merged);
+/** A write that carried the frames up to these cursors was accepted whole. missed: events a
+ *  marker in that write reported; merged: samples skipped. Ignored (false) unless the fd still
+ *  holds the open session of epoch. */
+bool ws_state_lane_commit(int fd, uint32_t epoch, uint32_t ev_next, uint32_t missed, uint32_t sensor_next,
+                          uint32_t merged);
 
+// Counts since boot. "Per session" counts add up over every /ws session.
 struct ws_lane_stats
 {
-    uint32_t ev_no_session; // events stored while no /ws session was open
+    uint32_t ev_no_session;        // events stored while no /ws session was open
+    uint32_t ev_stored;            // events stored
+    uint32_t events_missed;        // per session: evicted before it got them; reported by its markers
+    uint32_t events_lost_on_close; // per session: not delivered when it ended (any reason)
+    uint32_t sensor_merged;        // per session: samples skipped, more were pending than held
+    uint32_t backlog_max;          // the most events one session had pending at a view (evicted ones too)
+    uint32_t backlog_max_bytes;    // the most bytes of held events one session had pending at a view
 };
 
 void ws_state_lane_stats(struct ws_lane_stats* s);

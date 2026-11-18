@@ -84,6 +84,12 @@ static uint8_t sensor_wr;   // slot the next sample goes to
 
 static uint32_t open_sessions; // /ws entries with open set
 static uint32_t ev_no_session; // events stored while open_sessions was 0
+// Diagnostics (struct ws_lane_stats).
+static uint32_t events_missed;
+static uint32_t events_lost_on_close;
+static uint32_t sensor_merged;
+static uint32_t backlog_max;
+static uint32_t backlog_max_bytes;
 
 // 0 means "nothing known yet", so a wrap skips it.
 static uint32_t bump(atomic_uint* gen)
@@ -159,9 +165,12 @@ bool ws_state_ctx_is(int fd, const void* ctx)
     return ctx != NULL && ctx == ws_state_ctx(fd);
 }
 
-// Under lock. A /ws session on slot i ends.
+// Under lock. A /ws session on slot i ends: what it was not sent is lost to it.
 static void session_closed(int i)
 {
+    uint32_t pending = ev_head - fds[i].ev_next; // evicted ones included
+    if ((int32_t)pending > 0)
+        events_lost_on_close += pending;
     fds[i].open = false;
     open_sessions--;
 }
@@ -463,6 +472,14 @@ bool ws_state_lane_view(int fd, struct ws_lane_view* v)
         v->sensor_end = sensor_seq;
         v->sensor_from =
             sensor_seq - sensor_cursor > WS_SENSOR_SLOTS ? sensor_seq - WS_SENSOR_SLOTS : sensor_cursor;
+        uint32_t backlog = v->ev_end - v->ev_cursor;
+        if (backlog > backlog_max)
+            backlog_max = backlog;
+        uint32_t bytes = 0; // at most WS_EV_SLOTS records
+        for (uint32_t s = v->ev_from; s != v->ev_end; ++s)
+            bytes += ev_idx[s % WS_EV_SLOTS].len;
+        if (bytes > backlog_max_bytes)
+            backlog_max_bytes = bytes;
     }
     portEXIT_CRITICAL(&lock);
     v->ev_missed = v->ev_from - v->ev_cursor;
@@ -508,12 +525,10 @@ size_t ws_state_copy_sensor(uint32_t seq, uint8_t* buf, size_t size)
     return n;
 }
 
-bool ws_state_lane_commit(int fd, uint32_t epoch, uint32_t ev_next, uint32_t ev_missed, uint32_t sensor_next,
-                          uint32_t sensor_merged)
+bool ws_state_lane_commit(int fd, uint32_t epoch, uint32_t ev_next, uint32_t missed, uint32_t sensor_next,
+                          uint32_t merged)
 {
     int i;
-    (void)ev_missed;
-    (void)sensor_merged;
     if (!ws_state_slot(fd, &i))
         return false;
     portENTER_CRITICAL(&lock);
@@ -522,6 +537,8 @@ bool ws_state_lane_commit(int fd, uint32_t epoch, uint32_t ev_next, uint32_t ev_
     {
         fds[i].ev_next = ev_next;
         fds[i].sensor_next = sensor_next;
+        events_missed += missed;
+        sensor_merged += merged;
     }
     portEXIT_CRITICAL(&lock);
     return ok;
@@ -531,6 +548,12 @@ void ws_state_lane_stats(struct ws_lane_stats* s)
 {
     portENTER_CRITICAL(&lock);
     s->ev_no_session = ev_no_session;
+    s->ev_stored = ev_head;
+    s->events_missed = events_missed;
+    s->events_lost_on_close = events_lost_on_close;
+    s->sensor_merged = sensor_merged;
+    s->backlog_max = backlog_max;
+    s->backlog_max_bytes = backlog_max_bytes;
     portEXIT_CRITICAL(&lock);
 }
 
