@@ -6,6 +6,7 @@
 #include "auth.h"
 #include "cJSON.h"
 #include <stdlib.h>
+#include <string.h>
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_netif.h"
@@ -14,6 +15,11 @@
 #include "nconfig.h"
 #include "webserver.h"
 #include "wifi.h"
+
+// Holds the largest response: ~1.6 KB with every counter at 10 digits, the longest disconnect
+// reason and the static IP error (a typical one is ~1.2 KB). Grow it with new keys: a longer
+// response still prints, but into a buffer twice its size.
+#define DIAG_JSON_PREBUFFER 1664
 
 static const char* wifi_sta_state_str(wifi_sta_connection_state_t state)
 {
@@ -78,6 +84,14 @@ static esp_err_t diagnostics_get_handler(httpd_req_t* req)
     cJSON_AddNumberToObject(root, "uart_buffer_full_events", ws_diagnostics.uart_buffer_full_events);
     cJSON_AddNumberToObject(root, "uart_queue_drops", ws_diagnostics.uart_queue_drops);
     cJSON_AddNumberToObject(root, "status_queue_drops", ws_diagnostics.status_queue_drops);
+    cJSON_AddNumberToObject(root, "status_drops_queue_full", ws_diagnostics.status_drops_queue_full);
+    cJSON_AddNumberToObject(root, "status_drops_https_pending", ws_diagnostics.status_drops_https_pending);
+    cJSON_AddNumberToObject(root, "status_drops_ctrl_queue", ws_diagnostics.status_drops_ctrl_queue);
+    cJSON_AddNumberToObject(root, "status_drops_no_memory", ws_diagnostics.status_drops_no_memory);
+    cJSON_AddNumberToObject(root, "status_drops_no_client", ws_diagnostics.status_drops_no_client);
+    cJSON_AddNumberToObject(root, "status_sw_drops", ws_diagnostics.status_sw_drops);
+    cJSON_AddNumberToObject(root, "status_https_pending", ws_diagnostics.status_https_pending);
+    cJSON_AddNumberToObject(root, "uart_https_pending", ws_diagnostics.uart_https_pending);
 
     wifi_sta_diagnostics_t wifi_diagnostics;
     wifi_get_sta_diagnostics(&wifi_diagnostics);
@@ -130,13 +144,18 @@ static esp_err_t diagnostics_get_handler(httpd_req_t* req)
     cJSON_AddStringToObject(root, "wifi_gateway", gateway);
     cJSON_AddStringToObject(root, "wifi_netmask", netmask);
 
-    char* response = cJSON_PrintUnformatted(root);
+    // One buffer that fits the whole response, instead of cJSON_PrintUnformatted's doubling
+    // from 256 B: that peaks at ~2 KB more heap while the tree is still allocated.
+    char* response = cJSON_PrintBuffered(root, DIAG_JSON_PREBUFFER, false);
     cJSON_Delete(root);
     if (!response)
     {
         httpd_resp_send_500(req);
         return ESP_ERR_NO_MEM;
     }
+    char* fit = realloc(response, strlen(response) + 1); // shrinks in place
+    if (fit)
+        response = fit;
 
     httpd_resp_set_type(req, "application/json");
     err = httpd_resp_sendstr(req, response);

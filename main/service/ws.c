@@ -68,9 +68,28 @@ static volatile uint32_t uart_buffer_full_events;
 static volatile uint32_t uart_queue_drops;
 static volatile uint32_t status_queue_drops;
 static volatile uint32_t websocket_send_failures;
+// Status frame drops by cause. status_queue_drops keeps its meaning (queue full, or not
+// handed to httpd); these split it, and add the drops it never counted.
+static volatile uint32_t status_drops_queue_full;    // the status queue was full
+static volatile uint32_t status_drops_https_pending; // HTTPS: WS_HTTPS_MAX_PENDING frames already pending
+static volatile uint32_t status_drops_no_memory;     // the frame copy or the httpd work item malloc failed
+static volatile uint32_t status_drops_ctrl_queue;    // HTTPS: httpd_queue_work failed
+static volatile uint32_t status_drops_no_client;     // sw_status or event frame, no /ws registered
+static volatile uint32_t status_sw_drops;            // sw_status frames dropped with a /ws registered
 static int blocked_ws_fds[MAX_CLIENT];
 static uint8_t status_ws_session;
 static uint8_t uart_ws_session;
+
+// First byte of an encoded StatusMessage: the tag of its oneof payload.
+#define PB_TAG_SW_STATUS 0x1a // StatusMessage.sw_status, field 3, length-delimited
+#define PB_TAG_EVENT 0x2a     // StatusMessage.event_data, field 5
+
+static void count_status_drop(const uint8_t* frame, size_t len, volatile uint32_t* cause)
+{
+    (*cause)++;
+    if (len && frame[0] == PB_TAG_SW_STATUS)
+        status_sw_drops++;
+}
 
 static void websocket_session_ctx_free(void* ctx)
 {
@@ -248,24 +267,34 @@ static void ws_broadcast_work(void* arg)
     free(work);
 }
 
-static bool ws_queue_to_httpd(struct ws_sender_config* config, struct ws_message* msg)
+typedef enum
+{
+    WS_QUEUED,
+    WS_PENDING_FULL, // WS_HTTPS_MAX_PENDING frames are already pending
+    WS_NO_MEMORY,    // the work item could not be allocated
+    WS_CTRL_FAILED,  // httpd_queue_work failed
+} ws_queue_result_t;
+
+static ws_queue_result_t ws_queue_to_httpd(struct ws_sender_config* config, struct ws_message* msg)
 {
     if (atomic_fetch_add(&config->pending, 1) >= WS_HTTPS_MAX_PENDING)
     {
         atomic_fetch_sub(&config->pending, 1);
-        return false;
+        return WS_PENDING_FULL;
     }
+    ws_queue_result_t result = WS_NO_MEMORY;
     struct ws_work* work = malloc(sizeof(*work));
     if (work)
     {
         work->config = config;
         work->msg = *msg;
         if (httpd_queue_work(config->server, ws_broadcast_work, work) == ESP_OK)
-            return true;
+            return WS_QUEUED;
         free(work);
+        result = WS_CTRL_FAILED;
     }
     atomic_fetch_sub(&config->pending, 1);
-    return false;
+    return result;
 }
 
 static void ws_sender_task(void* arg)
@@ -290,13 +319,23 @@ static void ws_sender_task(void* arg)
         {
             ws_broadcast(config, &msg);
             free(msg.data);
+            continue;
         }
-        else if (!ws_queue_to_httpd(config, &msg))
+        ws_queue_result_t result = ws_queue_to_httpd(config, &msg);
+        if (result != WS_QUEUED)
         {
             if (config->uart_stream)
+            {
                 uart_queue_drops++;
+            }
             else
+            {
                 status_queue_drops++;
+                count_status_drop(msg.data, msg.len,
+                                  result == WS_PENDING_FULL ? &status_drops_https_pending
+                                  : result == WS_NO_MEMORY  ? &status_drops_no_memory
+                                                            : &status_drops_ctrl_queue);
+            }
             free(msg.data);
         }
     }
@@ -518,16 +557,25 @@ void register_ws_endpoint(httpd_handle_t server)
 void push_data_to_ws(const uint8_t* data, size_t len)
 {
     if (!status_websocket_client_connected(status_sender.server))
+    {
+        // Only frames that are not sent again: sensor and Wi-Fi ticks would swamp it.
+        if (len && (data[0] == PB_TAG_SW_STATUS || data[0] == PB_TAG_EVENT))
+            status_drops_no_client++;
         return;
+    }
 
     struct ws_message msg = {.data = malloc(len), .len = len};
     if (!msg.data)
+    {
+        count_status_drop(data, len, &status_drops_no_memory);
         return;
+    }
     memcpy(msg.data, data, len);
 
     if (xQueueSend(status_ws_queue, &msg, 0) != pdPASS)
     {
         status_queue_drops++;
+        count_status_drop(msg.data, msg.len, &status_drops_queue_full);
         free(msg.data);
     }
 }
@@ -552,6 +600,14 @@ void websocket_get_diagnostics(websocket_diagnostics_t* diagnostics)
     diagnostics->uart_queue_drops = uart_queue_drops;
     diagnostics->status_queue_drops = status_queue_drops;
     diagnostics->websocket_send_failures = websocket_send_failures;
+    diagnostics->status_drops_queue_full = status_drops_queue_full;
+    diagnostics->status_drops_https_pending = status_drops_https_pending;
+    diagnostics->status_drops_ctrl_queue = status_drops_ctrl_queue;
+    diagnostics->status_drops_no_memory = status_drops_no_memory;
+    diagnostics->status_drops_no_client = status_drops_no_client;
+    diagnostics->status_sw_drops = status_sw_drops;
+    diagnostics->status_https_pending = atomic_load(&status_sender.pending);
+    diagnostics->uart_https_pending = atomic_load(&uart_sender.pending);
 }
 
 bool uart_baud_rate_is_supported(long baud_rate)

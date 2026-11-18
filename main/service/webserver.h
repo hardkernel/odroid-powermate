@@ -39,6 +39,16 @@ typedef struct
     uint32_t uart_queue_drops;
     uint32_t status_queue_drops;
     uint32_t websocket_send_failures;
+    // Status frame drops by cause, and how many of them were sw_status.
+    uint32_t status_drops_queue_full;
+    uint32_t status_drops_https_pending;
+    uint32_t status_drops_ctrl_queue;
+    uint32_t status_drops_no_memory;
+    uint32_t status_drops_no_client;
+    uint32_t status_sw_drops;
+    // HTTPS: frames handed to the httpd task and not sent yet (0 over HTTP).
+    uint32_t status_https_pending;
+    uint32_t uart_https_pending;
 } websocket_diagnostics_t;
 
 void register_wifi_endpoint(httpd_handle_t server);
