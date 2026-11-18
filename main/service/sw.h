@@ -31,6 +31,7 @@ esp_err_t set_main_load_switch(bool on);
 esp_err_t set_usb_load_switch(bool on);
 bool get_main_load_switch();
 bool get_usb_load_switch();
+unsigned get_load_switch_outputs(void); /* SW_MAIN | SW_USB, both read at once */
 bool get_restore_output_state();
 esp_err_t set_restore_output_state(bool enabled);
 esp_err_t persist_load_switch_state();

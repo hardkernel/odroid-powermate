@@ -22,8 +22,9 @@ static esp_err_t control_get_handler(httpd_req_t* req)
 
     cJSON* root = cJSON_CreateObject();
 
-    cJSON_AddBoolToObject(root, "load_12v_on", get_main_load_switch());
-    cJSON_AddBoolToObject(root, "load_5v_on", get_usb_load_switch());
+    unsigned outputs = get_load_switch_outputs();
+    cJSON_AddBoolToObject(root, "load_12v_on", (outputs & SW_MAIN) != 0);
+    cJSON_AddBoolToObject(root, "load_5v_on", (outputs & SW_USB) != 0);
 
     char* json_string = cJSON_Print(root);
     httpd_resp_set_type(req, "application/json");

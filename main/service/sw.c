@@ -12,6 +12,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -40,11 +41,21 @@
 
 static const char* TAG = "control";
 
-// Cached output levels. Changed only with switch_mutex held, so the compare, the expander
-// write and the cache update are one step: a cut-off can neither be skipped as a no-op nor
-// be undone by a request that read the cache before it.
-static volatile bool load_switch_12v_status = false;
-static volatile bool load_switch_5v_status = false;
+// Cached output levels as SW_MAIN | SW_USB bits. Changed only with switch_mutex held, so the
+// compare, the expander write and the cache update are one step: a cut-off can neither be
+// skipped as a no-op nor be undone by a request that read the cache before it. Read without
+// the lock in one load, so main and usb always come from the same moment.
+static atomic_uint load_switch_outputs;
+
+static unsigned load_outputs(void)
+{
+    return atomic_load_explicit(&load_switch_outputs, memory_order_acquire);
+}
+
+static void store_outputs(unsigned outputs)
+{
+    atomic_store_explicit(&load_switch_outputs, outputs, memory_order_release);
+}
 
 // Lock order: switch_mutex, then expander_mutex, then the PCA9557 driver's own lock.
 // persist_mutex is never held together with the others: a cut-off never waits for NVS.
@@ -81,9 +92,10 @@ bool get_restore_output_state()
 // writes the latest state.
 static esp_err_t write_output_state(void)
 {
+    unsigned outputs = load_outputs();
     char state[] = {
-        load_switch_12v_status ? '1' : '0',
-        load_switch_5v_status ? '1' : '0',
+        (outputs & SW_MAIN) ? '1' : '0',
+        (outputs & SW_USB) ? '1' : '0',
         '\0',
     };
     return nconfig_write(OUTPUT_STATE, state);
@@ -140,8 +152,9 @@ static void send_sw_status_message()
     message.which_payload = StatusMessage_sw_status_tag;
     LoadSwStatus* sw_status = &message.payload.sw_status;
 
-    sw_status->main = load_switch_12v_status;
-    sw_status->usb = load_switch_5v_status;
+    unsigned outputs = load_outputs();
+    sw_status->main = (outputs & SW_MAIN) != 0;
+    sw_status->usb = (outputs & SW_USB) != 0;
 
     uint8_t buffer[PB_BUFFER_SIZE];
     pb_ostream_t stream = pb_ostream_from_buffer(buffer, sizeof(buffer));
@@ -166,15 +179,17 @@ esp_err_t sync_load_switch_status_from_hw()
     if (!switch_mutex)
         return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(switch_mutex, portMAX_DELAY);
+    unsigned outputs = load_outputs();
     bool level = false;
     esp_err_t err = pca9557_get_level(CONFIG_EXPANDER_GPIO_SW_12V, &level);
     if (err == ESP_OK)
     {
-        load_switch_12v_status = level;
+        outputs = level ? outputs | SW_MAIN : outputs & ~SW_MAIN;
         err = pca9557_get_level(CONFIG_EXPANDER_GPIO_SW_5V, &level);
         if (err == ESP_OK)
-            load_switch_5v_status = level;
+            outputs = level ? outputs | SW_USB : outputs & ~SW_USB;
     }
+    store_outputs(outputs);
     xSemaphoreGive(switch_mutex);
     if (err != ESP_OK)
         return err;
@@ -198,10 +213,10 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
         return ESP_ERR_TIMEOUT;
     }
 
-    bool was_main = load_switch_12v_status;
-    bool was_usb = load_switch_5v_status;
-    bool write_main = (mask & SW_MAIN) && (protective || main_on != was_main);
-    bool write_usb = (mask & SW_USB) && (protective || usb_on != was_usb);
+    unsigned was = load_outputs();
+    unsigned cur = was;
+    bool write_main = (mask & SW_MAIN) && (protective || main_on != ((was & SW_MAIN) != 0));
+    bool write_usb = (mask & SW_USB) && (protective || usb_on != ((was & SW_USB) != 0));
     esp_err_t main_err = ESP_OK;
     esp_err_t usb_err = ESP_OK;
 
@@ -220,7 +235,9 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
                 main_err = pca9557_set_level(GPIO_MAIN, main_on);
                 if (main_err == ESP_OK)
                 {
-                    load_switch_12v_status = main_on;
+                    // One store per write, so the word matches the hardware between the two.
+                    cur = (cur & ~SW_MAIN) | (main_on ? SW_MAIN : 0);
+                    store_outputs(cur);
                     write_main = false;
                 }
             }
@@ -229,7 +246,8 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
                 usb_err = pca9557_set_level(GPIO_USB, usb_on);
                 if (usb_err == ESP_OK)
                 {
-                    load_switch_5v_status = usb_on;
+                    cur = (cur & ~SW_USB) | (usb_on ? SW_USB : 0);
+                    store_outputs(cur);
                     write_usb = false;
                 }
             }
@@ -239,9 +257,8 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
         xSemaphoreGive(expander_mutex);
     }
 
-    bool now_main = load_switch_12v_status;
-    bool now_usb = load_switch_5v_status;
-    bool changed = now_main != was_main || now_usb != was_usb;
+    unsigned now = cur;
+    bool changed = now != was;
     xSemaphoreGive(switch_mutex);
     esp_err_t persist_err = changed ? persist_load_switch_state() : ESP_OK;
 
@@ -254,7 +271,8 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
         push_eventf(EV_WARNING, "failed to save load switch state: %s", esp_err_to_name(persist_err));
     }
     if (changed)
-        push_eventf(EV_INFO, "load switches set: main=%s usb=%s", now_main ? "on" : "off", now_usb ? "on" : "off");
+        push_eventf(EV_INFO, "load switches set: main=%s usb=%s", (now & SW_MAIN) ? "on" : "off",
+                    (now & SW_USB) ? "on" : "off");
     send_sw_status_message();
     return main_err != ESP_OK ? main_err : usb_err;
 }
@@ -402,6 +420,8 @@ esp_err_t set_usb_load_switch(bool on)
     return set_load_switch_outputs(SW_USB, false, on);
 }
 
-bool get_main_load_switch() { return load_switch_12v_status; }
+bool get_main_load_switch() { return (load_outputs() & SW_MAIN) != 0; }
 
-bool get_usb_load_switch() { return load_switch_5v_status; }
+bool get_usb_load_switch() { return (load_outputs() & SW_USB) != 0; }
+
+unsigned get_load_switch_outputs(void) { return load_outputs(); }
