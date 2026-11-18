@@ -91,11 +91,10 @@ _Static_assert(UART_FRAME_MAX >= 126 && UART_FRAME_MAX < 65536, "UART_FRAME_HEAD
 // what the lanes drop meanwhile is lost: events the ring evicts (a marker reports how many) and
 // samples older than the newest WS_SENSOR_SLOTS. On /uart the bytes wait in the UART ring while
 // a viewer is not ready (see uart_drain); a viewer that stays so past the hold cap loses frames
-// (counted) until it catches up.
-// The one exception is /uart over HTTP. Its writer, the UART writer task, writes nothing else,
-// so a blocking write there stalls only the console, as in v1.x. A dead client fails its write
-// after httpd's send timeout (5 s), and the session is closed; meanwhile the bridge sheds
-// (counted).
+// (counted) until it catches up, so one slow or dead viewer cannot stall the others.
+// The price over HTTP: a /uart socket keeps at most TCP_SNDLOWAT + one frame unacknowledged
+// (~7 KB) instead of the whole send buffer, so a viewer whose ACKs take longer than ~50 ms
+// cannot keep up with a full-rate flood at 1.5 Mbaud (over HTTPS this was always so).
 
 #define WS_FRAME_HEADER_MAX 10         // httpd_ws.c: 2 B + 8 B extended length (server frames are not masked)
 #define WS_TLS_RECORD_OVERHEAD_MAX 128 // TLS 1.2 header + explicit IV + MAC + padding, upper bound
@@ -240,7 +239,7 @@ static void ws_close_session(httpd_handle_t server, int fd)
     esp_err_t err = httpd_sess_trigger_close(server, fd);
     if (err == ESP_OK || err == ESP_ERR_NOT_FOUND)
         return; // queued, or the session is gone
-    websocket_close_failures++;
+    __atomic_fetch_add(&websocket_close_failures, 1, __ATOMIC_RELAXED); // two writers over HTTP
     ws_state_close_failed(fd);
     ws_state_request_pass();
     wake_status_sender();
@@ -251,7 +250,7 @@ static void ws_close_session(httpd_handle_t server, int fd)
 // WebSocket handshake on its fd.
 static void ws_session_failed(httpd_handle_t server, int fd, const char* name, esp_err_t err)
 {
-    websocket_send_failures++;
+    __atomic_fetch_add(&websocket_send_failures, 1, __ATOMIC_RELAXED); // two writers over HTTP
     ws_state_block(fd);
     ESP_LOGW(TAG, "%s: send failed for fd %d: %s", name, fd, esp_err_to_name(err));
     ws_close_session(server, fd);
@@ -301,17 +300,16 @@ static ws_ready_t ws_write_ready(int fd, bool https, size_t need)
     return WS_READY;
 }
 
+// Over HTTP the status sender and the UART writer both count here.
 static void count_write_skip(ws_ready_t ready)
 {
-    if (ready == WS_HEAP_SHORT)
-        websocket_heap_skips++;
-    else
-        websocket_not_ready_skips++;
+    __atomic_fetch_add(ready == WS_HEAP_SHORT ? &websocket_heap_skips : &websocket_not_ready_skips, 1,
+                       __ATOMIC_RELAXED);
 }
 
 static void stall_close(httpd_handle_t server, int fd, bool heap, bool status)
 {
-    websocket_stall_closes++;
+    __atomic_fetch_add(&websocket_stall_closes, 1, __ATOMIC_RELAXED); // two writers over HTTP
     if (status)
         status_stall_closes++;
     ws_state_block(fd);
@@ -1087,14 +1085,12 @@ static uart_drain_t uart_drain(httpd_handle_t server, unsigned max_frames)
         if (heap_caps_get_free_size(MALLOC_CAP_8BIT) < UART_MIN_FREE_HEAP)
             return UART_DRAIN_HELD;
 
-        // HTTPS: each viewer must take the frame without blocking. HTTP writes block instead
-        // (see "Never block on a WebSocket write"), so every viewer is ready.
+        // Each viewer must take the frame without blocking.
         size_t ready = 0;
         bool gate = false; // a viewer that is not lagging is not ready
         for (size_t i = 0; i < n; ++i)
         {
-            if (ws_https)
-                v[i].ready = ws_write_ready(v[i].fd, true, WS_TLS_UART_MIN_BLOCK);
+            v[i].ready = ws_write_ready(v[i].fd, ws_https, WS_TLS_UART_MIN_BLOCK);
             if (v[i].ready == WS_READY)
                 ready++;
             else if (!uart_lags[v[i].slot].lagging)
@@ -1104,9 +1100,11 @@ static uart_drain_t uart_drain(httpd_handle_t server, unsigned max_frames)
         if (ready == 0 || (gate && buffered < UART_HOLD_RING_MAX && young))
         {
             // The stall clock of a not-ready viewer runs, so a dead one alone is still closed
-            // after WS_STALL_CLOSE_MS while the bridge sheds.
+            // after WS_STALL_CLOSE_MS while the bridge sheds. Over HTTP only while the fd still
+            // holds that session: httpd runs above the writer, and a stall clock run on a new
+            // session (one a plain request holds keeps the old stall) could close it.
             for (size_t i = 0; i < n; ++i)
-                if (v[i].ready != WS_READY)
+                if (v[i].ready != WS_READY && (ws_https || uart_viewer_still(server, &v[i])))
                     ws_stall_clock(server, v[i].fd, v[i].ready, false);
             return uart_hold(now);
         }
@@ -1146,16 +1144,16 @@ static uart_drain_t uart_drain(httpd_handle_t server, unsigned max_frames)
         {
             struct uart_viewer* p = &v[(first + k) % n];
             struct uart_lag* lag = &uart_lags[p->slot];
+            if (!ws_https && !uart_viewer_still(server, p))
+            {
+                uart_viewer_lost(got); // closed or replaced meanwhile: never written, no stall clock
+                continue;
+            }
             if (p->ready != WS_READY)
             {
                 lag->streak = 0;
                 uart_viewer_lost(got);
                 ws_write_skipped(server, p->fd, p->ready, false); // counted; the stall clock runs
-                continue;
-            }
-            if (!ws_https && !uart_viewer_still(server, p))
-            {
-                uart_viewer_lost(got); // closed or replaced meanwhile: never written
                 continue;
             }
             int w = httpd_socket_send(server, p->fd, buf, len, 0);
