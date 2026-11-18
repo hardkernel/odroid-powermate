@@ -65,6 +65,8 @@ void register_wifi_endpoint(httpd_handle_t server);
 void register_ws_endpoint(httpd_handle_t server);
 void register_control_endpoint(httpd_handle_t server);
 void register_diagnostics_endpoint(httpd_handle_t server);
+/** Stores an encoded event or sensor_data StatusMessage for every open /ws session. Any task,
+ *  never an ISR; never blocks or allocates. */
 void push_data_to_ws(const uint8_t* data, size_t len);
 /** The load switch outputs may have changed (or a request finished): every /ws client is sent
  *  the outputs as they are when its frame is written. Any task, never an ISR; never blocks. */

@@ -3,13 +3,19 @@
  * SPDX-License-Identifier: GPL-3.0-only
  */
 
-// Switch and Wi-Fi state for the /ws stream, kept as latest values with a generation
-// number each, and what every WebSocket session was last sent. Used only by ws.c; it makes
-// no httpd or lwIP calls, so host tests can build it unchanged.
+// Everything the /ws stream sends, and what every WebSocket session was last sent. Used only by
+// ws.c; it makes no httpd or lwIP calls, so host tests can build it unchanged.
 //
-// A session is owed a value when its generation is not 0 (known) and differs from the one
-// last written to that session. A writer reads the generation first and the value after it,
-// and marks the session with the generation it read, so a mark never covers older content.
+// Switch and Wi-Fi state are latest values with a generation number each. A session is owed a
+// value when its generation is not 0 (known) and differs from the one last written to that
+// session. A writer reads the generation first and the value after it, and marks the session
+// with the generation it read, so a mark never covers older content.
+//
+// Events and sensor samples are held in two fixed lanes: an event ring, which evicts its oldest
+// record when full, and the newest WS_SENSOR_SLOTS samples. Each open /ws session has a cursor
+// into each lane, set at its handshake (no replay) and moved only after a write that carried
+// the frames was accepted whole. A session whose cursor fell behind the ring is sent how many
+// events it missed.
 //
 // Every function is non-blocking and may be called from any task, never from an ISR.
 
@@ -35,6 +41,13 @@
 // (10 B varint) and a 15 B address.
 #define WS_WIFI_FRAME_MAX 80
 
+// The event and sensor lanes. Their sizes are a static-RAM decision.
+#define WS_EV_RING_SIZE 2048    // event bytes held; <= UINT16_MAX (offsets are uint16_t)
+#define WS_EV_SLOTS 32          // events held at most; a power of two (seq % slots is wrap-safe)
+#define WS_EVENT_FRAME_MAX 256  // == PB_BUFFER_SIZE (asserted in ws.c)
+#define WS_SENSOR_SLOTS 3       // newest samples held
+#define WS_SENSOR_FRAME_MAX 105 // == 2 + SensorData_size (asserted in ws.c)
+
 /** Bumps the switch generation (skipping 0) and returns it. Call after storing the outputs. */
 uint32_t ws_state_bump_sw(void);
 /** Stores an encoded wifi_status frame and bumps its generation. False (nothing stored) if it is
@@ -53,8 +66,13 @@ bool ws_state_slot(int fd, int* slot);
 void* ws_state_ctx(int fd);
 /** True if ctx is the /ws session context of fd. */
 bool ws_state_ctx_is(int fd, const void* ctx);
-/** A WebSocket handshake on fd: a new session, owed everything, with every flag cleared. */
-void ws_state_session_opened(int fd);
+/** A WebSocket handshake on fd: a new session, owed all state, with every flag cleared. status:
+ *  a /ws session, which is open from now until its free_ctx, with its lane cursors at the
+ *  newest event and sample; otherwise (/uart) it is never open. */
+void ws_state_session_opened(int fd, bool status);
+/** httpd's free_ctx of a /ws session: it is no longer open, and nothing for it is written or
+ *  marked any more. Ignores any pointer other than a ws_state_ctx(), and a second call. */
+void ws_state_ctx_free(void* ctx);
 /** A write failed: write nothing more to this session. Set before its close is triggered. */
 void ws_state_block(int fd);
 /** Clears the blocked flag only (a plain GET of a WebSocket URI, which never upgrades). */
@@ -81,13 +99,68 @@ struct ws_owed
     uint32_t epoch; // the session the answer is for: pass it to the marks
     bool sw;        // owed sw_status
     bool wifi;      // owed wifi_status
+    bool snapshot;  // owed sw_status and never written state: state goes ahead of everything
+    bool events;    // events are pending
+    bool sensor;    // sensor samples are pending
 };
 
-/** What the session on fd is owed. Returns o->sw || o->wifi. */
+/** What the session on fd is owed. Only an open /ws session is owed anything. Returns true if
+ *  it is owed anything. */
 bool ws_state_owed(int fd, struct ws_owed* o);
 /** Records that generation gen was written, unless the fd has had a new session since epoch. */
 void ws_state_mark_sw(int fd, uint32_t epoch, uint32_t gen);
 void ws_state_mark_wifi(int fd, uint32_t epoch, uint32_t gen);
+
+enum ws_push
+{
+    WS_PUSH_STORED,     // stored, and a /ws session is open: request a pass
+    WS_PUSH_NO_SESSION, // stored, but no /ws session is open: no one to send it to
+    WS_PUSH_REFUSED,    // empty or too long: not stored
+};
+
+/** Stores an event frame (at most WS_EVENT_FRAME_MAX), evicting the oldest events as needed. */
+enum ws_push ws_state_push_event(const uint8_t* frame, size_t len);
+/** Stores a sensor frame (at most WS_SENSOR_FRAME_MAX) over the oldest sample. */
+enum ws_push ws_state_push_sensor(const uint8_t* frame, size_t len);
+/** The seq the next event gets (events stored since boot). */
+uint32_t ws_state_ev_head(void);
+
+/** What one batch for a session is built from, read in one critical section. Seqs are
+ *  [from, end); a cursor behind what is held starts at the oldest held, and the rest is missed
+ *  (events) or merged (sensor samples). */
+struct ws_lane_view
+{
+    uint32_t epoch;
+    uint32_t ev_cursor;     // the session's event cursor
+    uint32_t ev_from;       // the cursor, or the oldest held event if the cursor fell behind it
+    uint32_t ev_end;        // ev_head
+    uint32_t ev_missed;     // ev_from - ev_cursor: evicted before the session got them
+    uint32_t sensor_from;   // the cursor, or the oldest held sample
+    uint32_t sensor_end;    // samples stored since boot
+    uint32_t sensor_merged; // sensor_from - the cursor: overwritten before the session got them
+};
+
+/** The lanes as the open /ws session on fd sees them. False (nothing to send) unless it is open.
+ *  Moves no cursor. */
+bool ws_state_lane_view(int fd, struct ws_lane_view* v);
+/** Copies event seq into buf. Returns its length, or 0 with *gone if it was evicted, or 0 if it
+ *  is not stored yet or longer than size. */
+size_t ws_state_copy_event(uint32_t seq, uint8_t* buf, size_t size, bool* gone);
+/** Copies sensor sample seq into buf. Returns its length, or 0 if it is no longer held (or not
+ *  yet stored) or longer than size. */
+size_t ws_state_copy_sensor(uint32_t seq, uint8_t* buf, size_t size);
+/** A write that carried the frames up to these cursors was accepted whole. ev_missed: events a
+ *  marker in that write reported; sensor_merged: samples skipped. Ignored (false) unless the fd
+ *  still holds the open session of epoch. */
+bool ws_state_lane_commit(int fd, uint32_t epoch, uint32_t ev_next, uint32_t ev_missed, uint32_t sensor_next,
+                          uint32_t sensor_merged);
+
+struct ws_lane_stats
+{
+    uint32_t ev_no_session; // events stored while no /ws session was open
+};
+
+void ws_state_lane_stats(struct ws_lane_stats* s);
 
 /** A state pass must run (producer to status sender). */
 void ws_state_request_pass(void);
