@@ -110,12 +110,17 @@ export function updateUptimeUI(uptimeInSeconds) {
     }
 }
 
+// sw_status frames received over /ws. A GET /api/control answered after a newer push must not
+// overwrite it: REST and /ws use different connections, so the GET reply can arrive late.
+let switchStatusPushes = 0;
+
 /**
  * Updates the power switch toggle states based on WebSocket data.
  * @param {Object} swStatus - The switch status object from the WebSocket message.
  */
 export function updateSwitchStatusUI(swStatus) {
     if (swStatus) {
+        switchStatusPushes++;
         if (swStatus.main !== undefined) {
             dom.mainPowerToggle.checked = swStatus.main;
         }
@@ -529,8 +534,10 @@ export async function initializeSettings() {
  * Fetches and updates the status of the power control toggles.
  */
 export async function updateControlStatus() {
+    const pushesAtRequest = switchStatusPushes; // read before the request is sent
     try {
         const status = await api.fetchControlStatus();
+        if (switchStatusPushes !== pushesAtRequest) return; // a newer sw_status already arrived
         dom.mainPowerToggle.checked = status.load_12v_on;
         dom.usbPowerToggle.checked = status.load_5v_on;
     } catch (error) {
