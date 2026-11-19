@@ -56,6 +56,11 @@ static void store_outputs(unsigned outputs)
     atomic_store_explicit(&load_switch_outputs, outputs, memory_order_release);
 }
 
+// Outputs a protective cut could not confirm off, which no confirmed write or resync of that
+// output has settled since: retry_load_switch_cuts() cuts only these, once (it clears them
+// whatever its result). Guarded by switch_mutex, so a request that switches an output in the
+// meantime always wins over a stale retry.
+static unsigned cut_owed;
 // Outputs switched on (a confirmed write, or a resync that read them on) and not written off
 // again since, set next to each cache store and taken by the warning monitor in one exchange: the
 // one record of switch-ons, so each is seen once, even an off-then-on between two of its status
@@ -184,6 +189,7 @@ esp_err_t sync_load_switch_status_from_hw()
     store_outputs(outputs);
     if (outputs & ~was)
         atomic_fetch_or(&switched_on, outputs & ~was);
+    cut_owed &= outputs; // an output read off needs no cut
     xSemaphoreGive(switch_mutex);
     if (err != ESP_OK)
         return err;
@@ -192,13 +198,24 @@ esp_err_t sync_load_switch_status_from_hw()
     return ESP_OK;
 }
 
+struct cut_result
+{
+    unsigned tried;  // the outputs written
+    unsigned failed; // of those, not confirmed off (still on in the cache)
+};
+
 /**
  * Sets the outputs in mask (SW_MAIN, SW_USB); the others keep their level. A protective
  * change (a cut-off) waits for the locks instead of timing out, writes even when the cache
- * already reads off, and retries a failed write.
+ * already reads off, and retries a failed write. owed_only (protective): only the outputs in
+ * mask that cut_owed still holds. *res (may be NULL): what a protective change wrote.
  */
-static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool protective)
+static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool protective, bool owed_only,
+                                struct cut_result* res)
 {
+    mask &= SW_MAIN | SW_USB;
+    if (res)
+        *res = (struct cut_result){.tried = mask, .failed = mask}; // until a write is confirmed
     if (!switch_mutex)
         return ESP_ERR_INVALID_STATE; // init_sw() has not run
     if (xSemaphoreTake(switch_mutex, protective ? portMAX_DELAY : SWITCH_LOCK_TIMEOUT) == pdFALSE)
@@ -207,8 +224,15 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
         return ESP_ERR_TIMEOUT;
     }
 
+    if (owed_only)
+    {
+        mask &= cut_owed;
+        if (res)
+            *res = (struct cut_result){.tried = mask, .failed = mask};
+    }
     unsigned was = load_outputs();
     unsigned cur = was;
+    unsigned confirmed = 0; // outputs whose write was acknowledged
     bool write_main = (mask & SW_MAIN) && (protective || main_on != ((was & SW_MAIN) != 0));
     bool write_usb = (mask & SW_USB) && (protective || usb_on != ((was & SW_USB) != 0));
     esp_err_t main_err = ESP_OK;
@@ -229,6 +253,7 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
                 main_err = pca9557_set_level(GPIO_MAIN, main_on);
                 if (main_err == ESP_OK)
                 {
+                    confirmed |= SW_MAIN;
                     // One store per write, so the word matches the hardware between the two.
                     cur = (cur & ~SW_MAIN) | (main_on ? SW_MAIN : 0);
                     store_outputs(cur);
@@ -244,6 +269,7 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
                 usb_err = pca9557_set_level(GPIO_USB, usb_on);
                 if (usb_err == ESP_OK)
                 {
+                    confirmed |= SW_USB;
                     cur = (cur & ~SW_USB) | (usb_on ? SW_USB : 0);
                     store_outputs(cur);
                     if (usb_on)
@@ -258,6 +284,12 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
         }
         xSemaphoreGive(expander_mutex);
     }
+    // A failed write leaves its cache bit as it was: a cut owes only outputs still on. The retry
+    // (owed_only) is final: what it tried is owed no more, whatever its result.
+    unsigned not_off = protective ? ((write_main ? SW_MAIN : 0) | (write_usb ? SW_USB : 0)) & cur : 0;
+    cut_owed = owed_only ? (cut_owed & ~mask) : ((cut_owed & ~confirmed) | not_off);
+    if (res)
+        res->failed = not_off;
 
     unsigned now = cur;
     bool changed = now != was;
@@ -286,12 +318,27 @@ esp_err_t set_load_switch_outputs(unsigned mask, bool main_on, bool usb_on)
     ESP_LOGI(TAG, "Set load switches:%s%s%s%s", (mask & SW_MAIN) ? " main=" : "",
              (mask & SW_MAIN) ? (main_on ? "on" : "off") : "", (mask & SW_USB) ? " usb=" : "",
              (mask & SW_USB) ? (usb_on ? "on" : "off") : "");
-    return change_outputs(mask, main_on, usb_on, false);
+    return change_outputs(mask, main_on, usb_on, false, false, NULL);
 }
 
-esp_err_t cut_load_switch_outputs(unsigned mask)
+esp_err_t cut_load_switch_outputs(unsigned mask, unsigned* failed)
 {
-    return change_outputs(mask, false, false, true);
+    struct cut_result res;
+    esp_err_t err = change_outputs(mask, false, false, true, false, &res);
+    if (failed)
+        *failed = res.failed;
+    return err;
+}
+
+esp_err_t retry_load_switch_cuts(unsigned* tried, unsigned* failed)
+{
+    struct cut_result res;
+    esp_err_t err = change_outputs(SW_MAIN | SW_USB, false, false, true, true, &res);
+    if (tried)
+        *tried = res.tried;
+    if (failed)
+        *failed = res.failed;
+    return err;
 }
 
 unsigned take_switched_on_load_switches(void)

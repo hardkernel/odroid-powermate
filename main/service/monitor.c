@@ -350,21 +350,46 @@ static void push_warning_fault_details(uint16_t wf)
     }
 }
 
+// The outputs a warning cut could not confirm off (cut_load_switch_outputs already tried each
+// write PROTECTIVE_WRITE_ATTEMPTS times) are cut once more after this, by the warning task: a bus
+// fault may have passed by then. Only those, and only if no confirmed write or resync has settled
+// them since (sw.c decides under its lock): an output switched off and on again meanwhile is left
+// to the re-arm rule. An output that fails again is left to the next warning and to the critical
+// limit.
+#define WARNING_CUT_RETRY_MS 100
+
+static const char* sw_names(unsigned mask)
+{
+    mask &= SW_MAIN | SW_USB;
+    return mask == (SW_MAIN | SW_USB) ? "MAIN+USB" : mask == SW_MAIN ? "MAIN" : mask == SW_USB ? "USB" : "none";
+}
+
+// Cuts mask. Returns the outputs not confirmed off (0 when all are).
+static unsigned warning_cut(unsigned mask)
+{
+    unsigned failed = mask;
+    esp_err_t err = cut_load_switch_outputs(mask, &failed);
+    if (failed)
+    {
+        ESP_LOGW(TAG, "warning action failed: %s not confirmed off (%s), retrying in %d ms", sw_names(failed),
+                 esp_err_to_name(err), WARNING_CUT_RETRY_MS);
+        push_eventf(EV_WARNING, "warning action failed: %s not confirmed off (%s), retrying in %d ms",
+                    sw_names(failed), esp_err_to_name(err), WARNING_CUT_RETRY_MS);
+    }
+    return failed;
+}
+
 // Protective: cut_load_switch_outputs() waits for the switch locks and writes the outputs
-// off even when they already read off, so a request in flight cannot skip or undo it.
-static void disable_warning_fault_load_switches(uint16_t wf)
+// off even when they already read off, so a request in flight cannot skip or undo it. Returns
+// the outputs the cut could not turn off; *cut: the outputs it tried.
+static unsigned disable_warning_fault_load_switches(uint16_t wf, unsigned* cut)
 {
     if (wf & INA3221_FLAG_BIT(CHANNEL_VIN)) // The VIN input warning protects all outputs.
     {
         ESP_LOGW(TAG, "warning action: VIN limit exceeded, disabling all load switches");
         push_eventf(EV_WARNING, "warning action: VIN limit exceeded, disabling all load switches");
-        esp_err_t err = cut_load_switch_outputs(SW_MAIN | SW_USB);
-        if (err != ESP_OK)
-        {
-            ESP_LOGW(TAG, "warning action failed: all=%s", esp_err_to_name(err));
-            push_eventf(EV_WARNING, "warning action failed: %s", esp_err_to_name(err));
-        }
-        return;
+        *cut = SW_MAIN | SW_USB;
+        return warning_cut(SW_MAIN | SW_USB);
     }
 
     // Both in one call, so the second output is not left on while the first one's state is saved.
@@ -383,15 +408,8 @@ static void disable_warning_fault_load_switches(uint16_t wf)
         mask |= SW_USB;
     }
 
-    if (mask)
-    {
-        esp_err_t err = cut_load_switch_outputs(mask);
-        if (err != ESP_OK)
-        {
-            ESP_LOGW(TAG, "warning action failed: %s", esp_err_to_name(err));
-            push_eventf(EV_WARNING, "warning action failed: %s", esp_err_to_name(err));
-        }
-    }
+    *cut = mask;
+    return mask ? warning_cut(mask) : 0;
 }
 
 static double clamp_current_limit(double value, double max_value)
@@ -674,9 +692,42 @@ static void shutdown_load_sw_task(void* pvParameters)
 
 static void warning_alert_task(void* pvParameters)
 {
+    unsigned retry_mask = 0; // outputs a failed cut left not confirmed off: a retry is due at retry_at
+    TickType_t retry_at = 0;
     while (1)
     {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        // The retry waits here, so a warning that arrives meanwhile is handled at once.
+        TickType_t wait = portMAX_DELAY;
+        if (retry_mask)
+        {
+            TickType_t now = xTaskGetTickCount();
+            wait = (int32_t)(retry_at - now) > 0 ? retry_at - now : 0;
+        }
+        if (ulTaskNotifyTake(pdTRUE, wait) == 0)
+        {
+            // Timed out, so a retry is due: the one more cut of what is still owed.
+            unsigned tried = 0, failed = 0;
+            esp_err_t err = retry_load_switch_cuts(&tried, &failed);
+            if (!tried)
+            {
+                ESP_LOGI(TAG, "warning action retry: not needed, %s switched since", sw_names(retry_mask));
+                push_eventf(EV_INFO, "warning action retry: not needed, %s switched since", sw_names(retry_mask));
+            }
+            else if (!failed)
+            {
+                ESP_LOGW(TAG, "warning action retry: %s disabled", sw_names(tried));
+                push_eventf(EV_WARNING, "warning action retry: %s disabled", sw_names(tried));
+            }
+            else
+            {
+                ESP_LOGW(TAG, "warning action retry failed: %s not confirmed off (%s)", sw_names(failed),
+                         esp_err_to_name(err));
+                push_eventf(EV_WARNING, "warning action retry failed: %s not confirmed off (%s)", sw_names(failed),
+                            esp_err_to_name(err));
+            }
+            retry_mask = 0;
+            continue;
+        }
 
         ESP_LOGW(TAG, "warning interrupt triggered (via task)");
         ina3221_status_t status;
@@ -693,8 +744,14 @@ static void warning_alert_task(void* pvParameters)
         if (wf)
         {
             push_warning_fault_details(wf);
-            disable_warning_fault_load_switches(wf);
+            unsigned cut = 0;
+            unsigned failed = disable_warning_fault_load_switches(wf, &cut);
             last_warning_flags |= wf;
+            // Any output that just failed, new or already pending, gets the full delay (both share
+            // one expander register); what this cut turned off needs no retry.
+            if (failed)
+                retry_at = xTaskGetTickCount() + pdMS_TO_TICKS(WARNING_CUT_RETRY_MS);
+            retry_mask = (retry_mask & ~(cut & ~failed)) | failed;
         }
         else if (status_err == ESP_OK && last_warning_flags && gpio_get_level(PM_INT_WARNING) != 0)
         {

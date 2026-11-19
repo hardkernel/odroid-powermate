@@ -28,8 +28,13 @@ esp_err_t trig_power();
 esp_err_t trig_reset();
 /** Switches the outputs in mask (SW_MAIN, SW_USB); the others keep their level. */
 esp_err_t set_load_switch_outputs(unsigned mask, bool main_on, bool usb_on);
-/** Protective cut-off of the outputs in mask: waits for the locks and always writes. */
-esp_err_t cut_load_switch_outputs(unsigned mask);
+/** Protective cut-off of the outputs in mask: waits for the locks and always writes. *failed
+ *  (may be NULL): the outputs in mask not confirmed off (still on in the cache). */
+esp_err_t cut_load_switch_outputs(unsigned mask, unsigned* failed);
+/** Cuts once more what failed cuts left not confirmed off, except an output that a confirmed
+ *  write or a resync has settled since. Final: afterwards nothing is owed. *tried: the outputs
+ *  written; *failed: those still not confirmed off. Either may be NULL. */
+esp_err_t retry_load_switch_cuts(unsigned* tried, unsigned* failed);
 /** The outputs switched on (a confirmed write, or a resync that read them on) since the
  *  previous call. */
 unsigned take_switched_on_load_switches(void);
