@@ -58,6 +58,7 @@ static volatile uint16_t pending_warning_flags = 0;
 static portMUX_TYPE pending_flags_mux = portMUX_INITIALIZER_UNLOCKED;
 static SemaphoreHandle_t status_lock;
 static uint16_t last_warning_flags = 0;
+static uint16_t warning_seen; // the warning flags at the last status read, under status_lock
 
 #define INA3221_ADDR 0x40
 
@@ -120,8 +121,12 @@ static uint16_t take_pending_flags(volatile uint16_t* flags)
  * conversion cycle. So every read parks the critical flags in pending_critical_flags,
  * under one lock, before anyone else can read the register again: the shutdown task reads
  * the status first and takes the pending flags after, and never sees a cleared source.
- * The warning flags are not latched here, but the sampler still forwards the ones it sees
- * newly set (see sampler_task), so a read there can never hide a warning from its task.
+ * The warning flags are not latched. Every read hands the warning task the ones that are set
+ * now and were not at the previous read, by any task: the sampler polls the register at the
+ * moment the flags change, so it often sees a warning before the task does. Each rise is
+ * handed over once, so the warning interrupt and the sampler catching the same alert run the
+ * warning action once. A failed read hands a flag that is still set over again: it may have
+ * missed a clear, so an alert seen through an I2C error can run the action twice.
  *
  * Clearing the latch also releases the alert pin. A read that lands between the alert and
  * the interrupt handler's pin check leaves the handler seeing a high pin, so it would not
@@ -130,6 +135,7 @@ static uint16_t take_pending_flags(volatile uint16_t* flags)
  */
 static esp_err_t ina3221_get_status(ina3221_status_t* status)
 {
+    uint16_t rose = 0;
     xSemaphoreTake(status_lock, portMAX_DELAY);
     esp_err_t err = ina3221_read_status(status);
     if (err == ESP_OK && status->critical)
@@ -141,17 +147,41 @@ static esp_err_t ina3221_get_status(ina3221_status_t* status)
             xTaskNotifyGive(shutdown_task_handle);
         }
     }
+    if (err == ESP_OK)
+    {
+        // Parked under the lock, so a task that reads and then takes the pending flags gets them.
+        rose = status->warning & ~warning_seen;
+        warning_seen = status->warning;
+        if (rose)
+            add_pending_flags(&pending_warning_flags, rose);
+    }
+    else
+    {
+        warning_seen = 0; // it may have missed a clear: the next good read hands over what is set
+    }
     xSemaphoreGive(status_lock);
+    // The warning task takes them right after its own read. Before it exists (boot), they are
+    // only parked.
+    if (rose && warning_task_handle != NULL && xTaskGetCurrentTaskHandle() != warning_task_handle)
+        xTaskNotifyGive(warning_task_handle);
     return err;
 }
 
-static void notify_warning_task(uint16_t wf)
+// Boot: with the warning input inactive, a warning the limit setup parked is gone, and the last
+// read is forgotten too, so the next read that finds a flag set hands it over. The pin is read
+// under the lock, so a warning that asserts after this check is handed over once, by whichever
+// read comes first. False if the input is active.
+static bool forget_warning_flags_if_inactive(void)
 {
-    if (!wf)
-        return;
-    add_pending_flags(&pending_warning_flags, wf);
-    if (warning_task_handle != NULL)
-        xTaskNotifyGive(warning_task_handle);
+    xSemaphoreTake(status_lock, portMAX_DELAY);
+    bool inactive = gpio_get_level(PM_INT_WARNING) != 0;
+    if (inactive)
+    {
+        warning_seen = 0;
+        take_pending_flags(&pending_warning_flags);
+    }
+    xSemaphoreGive(status_lock);
+    return inactive;
 }
 
 static esp_err_t climit_get_channel_reg(uint8_t channel, ina3221_limit_t limit, float* limit_a, uint16_t* raw)
@@ -322,7 +352,10 @@ static void disable_warning_fault_load_switches(uint16_t wf)
         push_eventf(EV_WARNING, "warning action: VIN limit exceeded, disabling all load switches");
         esp_err_t err = cut_load_switch_outputs(SW_MAIN | SW_USB);
         if (err != ESP_OK)
+        {
             ESP_LOGW(TAG, "warning action failed: all=%s", esp_err_to_name(err));
+            push_eventf(EV_WARNING, "warning action failed: %s", esp_err_to_name(err));
+        }
         return;
     }
 
@@ -346,7 +379,10 @@ static void disable_warning_fault_load_switches(uint16_t wf)
     {
         esp_err_t err = cut_load_switch_outputs(mask);
         if (err != ESP_OK)
+        {
             ESP_LOGW(TAG, "warning action failed: %s", esp_err_to_name(err));
+            push_eventf(EV_WARNING, "warning action failed: %s", esp_err_to_name(err));
+        }
     }
 }
 
@@ -383,28 +419,8 @@ typedef struct
 static channel_accumulator_t accumulators[INA3221_CHANNELS];
 static portMUX_TYPE accumulator_mux = portMUX_INITIALIZER_UNLOCKED;
 
-/**
- * The sampler's Mask/Enable read. The warning flags change when an averaged result is
- * ready, the very moment this task polls, and the warning task reads the register only
- * after it is notified. So newly set warning flags are handed to it here, whether or not
- * this read would have cleared them; flags that stay set are not sent again.
- */
-static esp_err_t sampler_get_status(ina3221_status_t* status, uint16_t* last_wf)
-{
-    esp_err_t err = ina3221_get_status(status);
-    if (err != ESP_OK)
-        return err;
-    uint16_t wf = status->warning;
-    uint16_t new_wf = wf & ~*last_wf;
-    *last_wf = wf;
-    if (new_wf)
-        notify_warning_task(new_wf);
-    return ESP_OK;
-}
-
 static void sampler_task(void* arg)
 {
-    uint16_t last_wf = 0;
     const TickType_t sleep_ticks = pdMS_TO_TICKS(ina3221_cycle_us(&ina3221_config) / 1000 - 6);
     while (1)
     {
@@ -413,7 +429,7 @@ static void sampler_task(void* arg)
         ina3221_status_t status = {0};
         for (int polls = 0; polls < 10; polls++)
         {
-            if (sampler_get_status(&status, &last_wf) != ESP_OK || status.conversion_ready)
+            if (ina3221_get_status(&status) != ESP_OK || status.conversion_ready)
                 break;
             vTaskDelay(pdMS_TO_TICKS(2));
         }
@@ -599,8 +615,7 @@ static void shutdown_load_sw_task(void* pvParameters)
 
         if (status_err == ESP_OK)
         {
-            cf |= status.critical;
-            notify_warning_task(status.warning);
+            cf |= status.critical; // the read handed any newly set warning flag to its task
             if (cf)
                 push_critical_fault_sources(cf);
             else if (gpio_get_level(PM_INT_CRITICAL) == 0)
@@ -656,31 +671,29 @@ static void warning_alert_task(void* pvParameters)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         ESP_LOGW(TAG, "warning interrupt triggered (via task)");
-        uint16_t wf = take_pending_flags(&pending_warning_flags);
         ina3221_status_t status;
         esp_err_t status_err = ina3221_get_status(&status);
+        // After the read: it hands over the flags it finds newly set, as every read does. Only
+        // those are acted on, so a flag another read already handed over is not acted on twice.
+        uint16_t wf = take_pending_flags(&pending_warning_flags);
 
-        if (status_err == ESP_OK)
-        {
-            wf |= status.warning; // A critical flag here was handed over by the status read.
-            if (wf)
-            {
-                push_warning_fault_details(wf);
-                disable_warning_fault_load_switches(wf);
-                last_warning_flags = wf;
-            }
-            else if (last_warning_flags && gpio_get_level(PM_INT_WARNING) != 0)
-            {
-                ESP_LOGW(TAG, "warning cleared: previous_wf=0x%x int_gpio=%d", last_warning_flags,
-                         gpio_get_level(PM_INT_WARNING));
-                push_eventf(EV_WARNING, "warning cleared");
-                last_warning_flags = 0;
-            }
-        }
-        else
+        if (status_err != ESP_OK)
         {
             ESP_LOGW(TAG, "failed to read INA3221 status on warning interrupt: %s", esp_err_to_name(status_err));
             push_eventf(EV_WARNING, "warning fault: INA3221 status read failed: %s", esp_err_to_name(status_err));
+        }
+        if (wf)
+        {
+            push_warning_fault_details(wf);
+            disable_warning_fault_load_switches(wf);
+            last_warning_flags |= wf;
+        }
+        else if (status_err == ESP_OK && last_warning_flags && gpio_get_level(PM_INT_WARNING) != 0)
+        {
+            ESP_LOGW(TAG, "warning cleared: previous_wf=0x%x int_gpio=%d", last_warning_flags,
+                     gpio_get_level(PM_INT_WARNING));
+            push_eventf(EV_WARNING, "warning cleared");
+            last_warning_flags = 0;
         }
     }
 }
@@ -863,7 +876,7 @@ void init_status_monitor()
         // would be blamed for the next button press.
         take_pending_flags(&pending_critical_flags);
     }
-    if (gpio_get_level(PM_INT_WARNING) == 0 && warning_task_handle != NULL)
+    if (!forget_warning_flags_if_inactive() && warning_task_handle != NULL)
         xTaskNotifyGive(warning_task_handle);
 
     // Started after the boot checks so that its reads cannot park a flag that the check
