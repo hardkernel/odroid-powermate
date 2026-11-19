@@ -56,6 +56,12 @@ static void store_outputs(unsigned outputs)
     atomic_store_explicit(&load_switch_outputs, outputs, memory_order_release);
 }
 
+// Outputs switched on (a confirmed write, or a resync that read them on) and not written off
+// again since, set next to each cache store and taken by the warning monitor in one exchange: the
+// one record of switch-ons, so each is seen once, even an off-then-on between two of its status
+// reads, and one a cut has already turned off re-arms nothing.
+static atomic_uint switched_on;
+
 // Lock order: switch_mutex, then expander_mutex, then the PCA9557 driver's own lock.
 // persist_mutex is never held together with the others: a cut-off never waits for NVS.
 static SemaphoreHandle_t switch_mutex;   // load switch changes: compare, expander write, cache
@@ -164,7 +170,8 @@ esp_err_t sync_load_switch_status_from_hw()
     if (!switch_mutex)
         return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(switch_mutex, portMAX_DELAY);
-    unsigned outputs = load_outputs();
+    unsigned was = load_outputs();
+    unsigned outputs = was;
     bool level = false;
     esp_err_t err = pca9557_get_level(CONFIG_EXPANDER_GPIO_SW_12V, &level);
     if (err == ESP_OK)
@@ -175,6 +182,8 @@ esp_err_t sync_load_switch_status_from_hw()
             outputs = level ? outputs | SW_USB : outputs & ~SW_USB;
     }
     store_outputs(outputs);
+    if (outputs & ~was)
+        atomic_fetch_or(&switched_on, outputs & ~was);
     xSemaphoreGive(switch_mutex);
     if (err != ESP_OK)
         return err;
@@ -223,6 +232,10 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
                     // One store per write, so the word matches the hardware between the two.
                     cur = (cur & ~SW_MAIN) | (main_on ? SW_MAIN : 0);
                     store_outputs(cur);
+                    if (main_on) // a write is a level change, so on means off-to-on
+                        atomic_fetch_or(&switched_on, SW_MAIN);
+                    else // switched off again (a cut included): no re-arm is owed any more
+                        atomic_fetch_and(&switched_on, ~SW_MAIN);
                     write_main = false;
                 }
             }
@@ -233,6 +246,10 @@ static esp_err_t change_outputs(unsigned mask, bool main_on, bool usb_on, bool p
                 {
                     cur = (cur & ~SW_USB) | (usb_on ? SW_USB : 0);
                     store_outputs(cur);
+                    if (usb_on)
+                        atomic_fetch_or(&switched_on, SW_USB);
+                    else
+                        atomic_fetch_and(&switched_on, ~SW_USB);
                     write_usb = false;
                 }
             }
@@ -275,6 +292,11 @@ esp_err_t set_load_switch_outputs(unsigned mask, bool main_on, bool usb_on)
 esp_err_t cut_load_switch_outputs(unsigned mask)
 {
     return change_outputs(mask, false, false, true);
+}
+
+unsigned take_switched_on_load_switches(void)
+{
+    return atomic_exchange(&switched_on, 0);
 }
 
 esp_err_t set_load_switches(bool main_on, bool usb_on)

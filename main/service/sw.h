@@ -30,6 +30,9 @@ esp_err_t trig_reset();
 esp_err_t set_load_switch_outputs(unsigned mask, bool main_on, bool usb_on);
 /** Protective cut-off of the outputs in mask: waits for the locks and always writes. */
 esp_err_t cut_load_switch_outputs(unsigned mask);
+/** The outputs switched on (a confirmed write, or a resync that read them on) since the
+ *  previous call. */
+unsigned take_switched_on_load_switches(void);
 esp_err_t set_load_switches(bool main_on, bool usb_on);
 esp_err_t set_main_load_switch(bool on);
 esp_err_t set_usb_load_switch(bool on);

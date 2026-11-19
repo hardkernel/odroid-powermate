@@ -125,8 +125,10 @@ static uint16_t take_pending_flags(volatile uint16_t* flags)
  * now and were not at the previous read, by any task: the sampler polls the register at the
  * moment the flags change, so it often sees a warning before the task does. Each rise is
  * handed over once, so the warning interrupt and the sampler catching the same alert run the
- * warning action once. A failed read hands a flag that is still set over again: it may have
- * missed a clear, so an alert seen through an I2C error can run the action twice.
+ * warning action once. Two things hand a flag that is still set over again: a failed read
+ * (it may have missed a clear, so an alert seen through an I2C error can run the action
+ * twice), and an output switched on since the previous read, which re-arms its own flag and
+ * VIN's, so an output turned on while over its limit is cut again.
  *
  * Clearing the latch also releases the alert pin. A read that lands between the alert and
  * the interrupt handler's pin check leaves the handler seeing a high pin, so it would not
@@ -149,6 +151,12 @@ static esp_err_t ina3221_get_status(ina3221_status_t* status)
     }
     if (err == ESP_OK)
     {
+        // Every switch-on since the previous read, each seen once (sw.c records them).
+        unsigned on = take_switched_on_load_switches();
+        if (on)
+            warning_seen &= (uint16_t)~(INA3221_FLAG_BIT(CHANNEL_VIN) |
+                                        ((on & SW_MAIN) ? INA3221_FLAG_BIT(CHANNEL_MAIN) : 0) |
+                                        ((on & SW_USB) ? INA3221_FLAG_BIT(CHANNEL_USB) : 0));
         // Parked under the lock, so a task that reads and then takes the pending flags gets them.
         rose = status->warning & ~warning_seen;
         warning_seen = status->warning;
